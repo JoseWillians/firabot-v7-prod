@@ -1,0 +1,13 @@
+auth/
+database/backups/
+dist/
+docs/
+documentos/
+graphify-out
+logs/
+node_modules/
+.env
+*.log
+AGENTS.md
+db.txt
+
