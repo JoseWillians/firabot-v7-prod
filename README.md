@@ -40,10 +40,12 @@ Variáveis principais:
 - `LOG_LEVEL`: nível de log esperado. Use `debug` para detalhes adicionais.
 - `MESSAGE_START_GRACE_SECONDS`: tolerância para filtro de mensagens anteriores ao início.
 - `SPAM_WINDOW_MS`: janela para evitar respostas repetidas ao mesmo usuário/texto.
+- `MESSAGE_DEDUP_TTL_MS`: tempo de retenção dos IDs já processados para evitar respostas duplicadas após reentrega do Baileys.
 - `RECONNECT_DELAY_MS`: atraso antes de tentar reconectar.
 - `USER_STATE_TTL_MINUTES`: tempo de expiração do estado de conversa; `0` desativa a expiração.
 - `DOCUMENT_MAX_SIZE_MB`: tamanho máximo de PDF para envio automático.
 - `ADMIN_NUMBERS`: números autorizados para comandos administrativos, separados por vírgula e com DDI/DDD.
+- `SUPPORT_TICKET_RETENTION_DAYS`: retenção opt-in das solicitações de suporte; `0` mantém a limpeza automática desativada até aprovação institucional.
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`: conexão MySQL.
 - `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: opcionais para sobrescrever o MySQL local do `docker-compose.yml`.
 
@@ -86,15 +88,36 @@ DESCRIBE docs;
 
 Tabelas usadas:
 
-- `users`: usuários identificados pelo JID/número.
+- `users`: usuários identificados pelo JID do WhatsApp, com telefone E.164 separado quando o Baileys o fornece.
 - `user_states`: estado atual de navegação.
 - `logs`: histórico simples de eventos.
+- `support_tickets`: solicitações minimizadas de suporte, com validade opcional.
 - `docs`: documentos ativos carregados no menu de documentos.
 - `important_links`: links importantes administráveis pelo painel.
 - `notices`: editais administráveis pelo painel enquanto não houver sincronização automática.
 - `sectors`, `admin_roles`, `admin_users`, `admin_user_sectors`, `admin_audit_logs`: base inicial para o painel administrativo e RBAC por setor.
 
 Para produção, use outro `.env` apontando para o servidor do IFMA. Não misture credenciais remotas com o `.env` local de desenvolvimento.
+
+### Migrations, Backup E Restore
+
+Antes de aplicar migrations em um banco existente, gere um backup:
+
+```bash
+npm run db:backup
+npm run db:migrate
+npm run db:restore:test
+```
+
+As migrations numeradas ficam em `database/migrations/` e são registradas em
+`schema_migrations`, com checksum para detectar alteração indevida em um arquivo
+já aplicado. Os scripts operam, por padrão, somente no container local
+`firabot-mysql`. O restore sempre cria e remove um banco temporário isolado.
+Backups ficam em `database/backups/`, que não é versionado.
+
+As migrations `003` a `005` separam JID/telefone, tornam o suporte compatível
+com retenção futura e acrescentam fonte, responsável, revisão e validade ao
+catálogo de links/editais. Conteúdo com `expires_at` vencido não é exibido.
 
 ### Documentos
 
@@ -181,7 +204,14 @@ O Firabot usa uma estratégia híbrida:
 - arquivos `.md` documentam decisões e mudanças;
 - arquivos `.txt` não são usados como armazenamento principal de logs.
 
-Os logs técnicos mascaram telefone e removem campos sensíveis como senha, token e QR Code. Eventos do banco guardam apenas preview e metadados úteis, como tipo de evento, estado anterior, estado posterior, comando, menu, documento e sucesso.
+Os logs técnicos mascaram telefone e removem, inclusive de objetos aninhados, campos sensíveis como senha, token, conteúdo de mensagem e QR Code. Eventos do banco guardam apenas preview e metadados úteis; a coluna legada `logs.message` permanece vazia nos novos registros.
+
+Cada evento recebe um código operacional inspirado em HTTP: `200` para sucesso,
+`202` para solicitação aceita, `204` para mensagem ignorada, `400` para entrada
+inválida, `403` para acesso negado, `404` para recurso ausente, `409` para
+duplicidade, `413` para arquivo grande, `429` para anti-spam, `500` para erro
+interno e `503` para dependência indisponível. Esses códigos servem para suporte
+e observabilidade; o bot não é uma API HTTP.
 
 ## Docker
 
@@ -198,6 +228,17 @@ docker run --env-file .env -v ./auth:/app/auth -v ./documentos:/app/documentos f
 ```
 
 A imagem de produção roda como usuário `node` e não copia `.env` nem `auth/`. Mantenha `auth/` como volume persistente e restrito; em Linux, ajuste permissões do volume se o container não conseguir gravar a sessão do Baileys. O MySQL do Compose fica publicado apenas em `127.0.0.1` para evitar exposição acidental na rede.
+
+Há também uma base de produção em `docker-compose.prod.yml`, sem porta pública
+para o MySQL e com redes separadas para banco e saída do WhatsApp. Prepare
+`.env.production` a partir de `.env.production.example` e valide antes do deploy:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+Não use as credenciais locais de desenvolvimento em produção.
 
 ## Comandos
 
@@ -225,7 +266,20 @@ Links importantes e editais são carregados preferencialmente das tabelas `impor
 
 ## Testes e Qualidade
 
-O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, sanitização de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável. Ele ainda não substitui testes de integração com WhatsApp/Baileys real, MySQL real em fluxo completo ou envio real de mídia.
+O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável.
+
+Com o MySQL Docker ativo e após um build confiável, o teste integrado pode ser
+executado no PowerShell com:
+
+```powershell
+$env:RUN_DB_INTEGRATION='true'
+npm run test:integration
+```
+
+Ele valida o `messageHandler` com socket falso e banco real. O teste usa identidade
+sintética, confirma autorização LID/PN, saudação e estado `docs`, e remove seus
+dados ao terminar. Ele não envia mensagens no WhatsApp real e recusa `DB_HOST`
+que não seja `127.0.0.1` ou `localhost`.
 
 Casos manuais importantes:
 
@@ -274,6 +328,7 @@ No fluxo `5 - Editais Abertos`, o bot lista até 10 editais em andamento da pág
 - Docker não encontra PDFs: monte `./documentos:/app/documentos` ou garanta que a pasta foi copiada para a imagem.
 - Erro de configuração ao iniciar: confira `DB_HOST`, `DB_USER` e `DB_NAME` no `.env`.
 - Banco indisponível: confirme `docker compose up -d mysql`, `DB_HOST=127.0.0.1`, `DB_PORT=3306` e as credenciais locais.
+- Comando administrativo retorna `403`: configure `ADMIN_NUMBERS` apenas com dígitos, DDI e DDD. Conversas recentes podem chegar como JID `@lid`; o bot tenta os campos alternativos, o mapeamento LID→PN do Baileys e, por último, o telefone já associado ao JID no MySQL. O código `503` indica que `ADMIN_NUMBERS` está vazio. Reinicie o bot depois de alterar o `.env`.
 
 ## Testes Manuais Recomendados
 

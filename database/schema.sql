@@ -65,10 +65,15 @@ DELIMITER ;
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     phone_number VARCHAR(255) UNIQUE NOT NULL,
+    whatsapp_jid VARCHAR(191),
+    phone_e164 VARCHAR(20),
     full_name VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CALL add_index_if_missing('users', 'idx_users_whatsapp_jid', 'CREATE INDEX idx_users_whatsapp_jid ON users (whatsapp_jid)');
+CALL add_index_if_missing('users', 'idx_users_phone_e164', 'CREATE INDEX idx_users_phone_e164 ON users (phone_e164)');
 
 -- =========================================================
 -- 2. TABELA DE ESTADOS DO USUÁRIO
@@ -97,7 +102,9 @@ CALL add_index_if_missing('user_states', 'idx_user_states_state', 'CREATE INDEX 
 CREATE TABLE IF NOT EXISTS logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    message TEXT NOT NULL,
+    -- Campo legado mantido para compatibilidade. Novos registros não guardam
+    -- a mensagem integral; use message_preview para diagnóstico minimizado.
+    message TEXT NULL,
     message_preview VARCHAR(255),
     state VARCHAR(50),
     state_before VARCHAR(50),
@@ -108,10 +115,20 @@ CREATE TABLE IF NOT EXISTS logs (
     document_id VARCHAR(100),
     success TINYINT(1),
     error_message VARCHAR(255),
+    result_code SMALLINT UNSIGNED,
+    correlation_id VARCHAR(191),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_logs_user
       FOREIGN KEY (user_id) REFERENCES users(id)
       ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Registro das migrations aplicadas em bancos já existentes. O schema base
+-- continua idempotente, enquanto mudanças incrementais ganham rastreabilidade.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(191) PRIMARY KEY,
+    checksum CHAR(64) NOT NULL,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Índices para facilitar auditoria e consultas recentes.
@@ -119,6 +136,8 @@ CALL add_index_if_missing('logs', 'idx_logs_user_id', 'CREATE INDEX idx_logs_use
 CALL add_index_if_missing('logs', 'idx_logs_created_at', 'CREATE INDEX idx_logs_created_at ON logs (created_at)');
 CALL add_index_if_missing('logs', 'idx_logs_event_type', 'CREATE INDEX idx_logs_event_type ON logs (event_type)');
 CALL add_index_if_missing('logs', 'idx_logs_success', 'CREATE INDEX idx_logs_success ON logs (success)');
+CALL add_index_if_missing('logs', 'idx_logs_result_code', 'CREATE INDEX idx_logs_result_code ON logs (result_code)');
+CALL add_index_if_missing('logs', 'idx_logs_correlation_id', 'CREATE INDEX idx_logs_correlation_id ON logs (correlation_id)');
 
 -- =========================================================
 -- 4. TABELA DINÂMICA DE DOCUMENTOS
@@ -183,12 +202,17 @@ CREATE TABLE IF NOT EXISTS important_links (
     sector_code VARCHAR(50),
     sector_label VARCHAR(100),
     sort_order INT,
+    source VARCHAR(180),
+    content_owner VARCHAR(120),
+    reviewed_at TIMESTAMP NULL,
+    expires_at TIMESTAMP NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_important_links_url (url),
     INDEX idx_important_links_active_sort (is_active, sort_order, id),
-    INDEX idx_important_links_sector_active_sort (sector_code, is_active, sort_order, id)
+    INDEX idx_important_links_sector_active_sort (sector_code, is_active, sort_order, id),
+    INDEX idx_important_links_expires_at (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO important_links (id, title, url, scope, sector_code, sector_label, sort_order, is_active) VALUES
@@ -216,12 +240,16 @@ CREATE TABLE IF NOT EXISTS notices (
     sector_code VARCHAR(50),
     sector_label VARCHAR(100),
     sort_order INT,
+    content_owner VARCHAR(120),
+    reviewed_at TIMESTAMP NULL,
+    expires_at TIMESTAMP NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_notices_url (url),
     INDEX idx_notices_active_sort (is_active, sort_order, id),
-    INDEX idx_notices_sector_active_sort (sector_code, is_active, sort_order, id)
+    INDEX idx_notices_sector_active_sort (sector_code, is_active, sort_order, id),
+    INDEX idx_notices_expires_at (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO notices (id, title, url, status, source, sector_code, sector_label, sort_order, is_active) VALUES
@@ -326,12 +354,15 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP NULL,
+    expires_at TIMESTAMP NULL,
     CONSTRAINT fk_support_tickets_user
       FOREIGN KEY (user_id) REFERENCES users(id)
       ON DELETE SET NULL,
     INDEX idx_support_tickets_status_created (status, created_at),
     INDEX idx_support_tickets_sector_status (sector_code, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CALL add_index_if_missing('support_tickets', 'idx_support_tickets_expires_at', 'CREATE INDEX idx_support_tickets_expires_at ON support_tickets (expires_at)');
 
 INSERT INTO sectors (code, name, description, is_active) VALUES
 ('drca', 'DRCA', 'Documentos e informações de registro e controle acadêmico.', 1),

@@ -6,9 +6,10 @@ import {
   isPrefixedCommand
 } from '../dist/services/messageGuardService.js'
 import { getMenuRouteForOption, shouldCaptureSupportMessage } from '../dist/services/menuRoutingService.js'
-import { isStateExpiredWithTtl, normalizeUserState } from '../dist/services/userStateService.js'
-import { isAdminNumberAuthorized, normalizeAdminNumber } from '../dist/services/adminAuthService.js'
-import { botLog, maskPhone } from '../dist/services/logService.js'
+import { canSafelyRouteNumericInput, isStateExpiredWithTtl, normalizeUserState } from '../dist/services/userStateService.js'
+import { isAdminMessageAuthorized, isAdminNumberAuthorized, normalizeAdminNumber, resolveAdminAuthorization } from '../dist/services/adminAuthService.js'
+import { botLog, maskPhone, resolveEventResultCode } from '../dist/services/logService.js'
+import { BotResultCode } from '../dist/types/resultCode.js'
 import { formatCourseMenu, formatMainMenu, formatMenu } from '../dist/services/menuService.js'
 import { formatDocumentSuccessMessage, resolveSafeDocumentPath, sendDocument } from '../dist/services/documentService.js'
 import { extractMessageText } from '../dist/services/messageTextService.js'
@@ -16,8 +17,16 @@ import { docsCategoryMenu } from '../dist/menus/docsMenu.js'
 import { getPpcCategoryCodeByState } from '../dist/menus/courseMenu.js'
 import { formatOpenNoticesMessage, openNotices } from '../dist/menus/noticesMenu.js'
 import { formatContextualFollowUpMessage, getRemainingMenuOptions } from '../dist/services/followUpMenuService.js'
-import { sendUnknownMessage } from '../dist/flows/conversationFlow.js'
-import { formatSupportAcknowledgement, formatSupportPrompt } from '../dist/flows/supportFlow.js'
+import { cancelPendingFollowUp, sendFollowUp, sendUnknownMessage } from '../dist/flows/conversationFlow.js'
+import { formatSupportAcknowledgement, formatSupportPrompt, sanitizeSupportMessage } from '../dist/flows/supportFlow.js'
+import { detectConversationIntent } from '../dist/services/conversationIntentService.js'
+import { getMessageJidCandidates, getPhoneE164FromJids } from '../dist/services/userIdentityService.js'
+import {
+  clearProcessedMessageIds,
+  processMessageBatch,
+  shouldProcessMessageId
+} from '../dist/services/messageBatchService.js'
+import { prepareLogMessageStorage } from '../dist/functions/database.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -43,6 +52,62 @@ function createFakeSocket() {
     }
   }
 }
+
+await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
+  const processed = []
+  const messages = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+
+  await processMessageBatch(messages, async message => {
+    processed.push(message.id)
+  })
+
+  assert.deepEqual(processed, ['a', 'b', 'c'])
+})
+
+await runAsyncTest('isola erro de uma mensagem sem perder o restante do lote', async () => {
+  const processed = []
+  const errors = []
+
+  await processMessageBatch(
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    async message => {
+      if (message.id === 'b') throw new Error('falha controlada')
+      processed.push(message.id)
+    },
+    async (error, message) => {
+      errors.push({ error: error.message, id: message.id })
+    }
+  )
+
+  assert.deepEqual(processed, ['a', 'c'])
+  assert.deepEqual(errors, [{ error: 'falha controlada', id: 'b' }])
+})
+
+runTest('bloqueia ID duplicado durante a janela de deduplicação', () => {
+  clearProcessedMessageIds()
+
+  assert.equal(shouldProcessMessageId('message-1', 1_000, 10_000), true)
+  assert.equal(shouldProcessMessageId('message-1', 2_000, 10_000), false)
+  assert.equal(shouldProcessMessageId('message-1', 11_001, 10_000), true)
+})
+
+runTest('persiste apenas preview minimizado nos logs de atendimento', () => {
+  const content = `  ${'mensagem sensível '.repeat(30)}  `
+  const stored = prepareLogMessageStorage(content)
+
+  assert.equal(stored.legacyMessage, '')
+  assert.equal(stored.messagePreview.length, 255)
+  assert.equal(stored.messagePreview.startsWith('mensagem sensível'), true)
+})
+
+runTest('aceita mensagens sem ID e remove IDs expirados do cache', () => {
+  clearProcessedMessageIds()
+
+  assert.equal(shouldProcessMessageId(undefined, 1_000, 10_000), true)
+  assert.equal(shouldProcessMessageId('expired', 1_000, 10_000), true)
+  assert.equal(shouldProcessMessageId('current', 20_000, 10_000), true)
+  assert.equal(shouldProcessMessageId('expired', 20_001, 10_000), true)
+})
 
 runTest('detecta saudações e mensagens de início sem prefixo', () => {
   assert.equal(isGreetingOrStartMessage('oi'), true)
@@ -159,6 +224,12 @@ runTest('usa main como fallback para estado inválido', () => {
   assert.equal(normalizeUserState('estado-invalido'), 'main')
 })
 
+runTest('bloqueia opção numérica quando o estado não é confiável', () => {
+  assert.equal(canSafelyRouteNumericInput({ state: 'main', source: 'database', databaseAvailable: true }), true)
+  assert.equal(canSafelyRouteNumericInput({ state: 'docs', source: 'memory', databaseAvailable: false }), true)
+  assert.equal(canSafelyRouteNumericInput({ state: 'main', source: 'default', databaseAvailable: false }), false)
+})
+
 runTest('detecta expiração de estado por TTL configurado', () => {
   const now = new Date('2026-05-17T12:00:00Z')
 
@@ -169,12 +240,114 @@ runTest('detecta expiração de estado por TTL configurado', () => {
 
 runTest('normaliza e autoriza números administrativos', () => {
   assert.equal(normalizeAdminNumber('+55 (98) 99999-9999@s.whatsapp.net'), '5598999999999')
+  assert.equal(normalizeAdminNumber('5598999999999:12@s.whatsapp.net'), '5598999999999')
   assert.equal(isAdminNumberAuthorized('5598999999999@s.whatsapp.net', ['+55 (98) 99999-9999']), true)
   assert.equal(isAdminNumberAuthorized('5598888888888@s.whatsapp.net', ['5598999999999']), false)
+  assert.equal(isAdminNumberAuthorized('5598999999999@lid', ['5598999999999']), false)
+})
+
+await runAsyncTest('resolve administrador por mapeamento LID do socket', async () => {
+  const sock = {
+    signalRepository: {
+      lidMapping: {
+        async getPNForLID(lid) {
+          assert.equal(lid, '123456789012345@lid')
+          return '5598999999999:7@s.whatsapp.net'
+        }
+      }
+    }
+  }
+  const result = await resolveAdminAuthorization(
+    sock,
+    { key: { remoteJid: '123456789012345@lid' } },
+    ['5598999999999']
+  )
+  assert.deepEqual(result, {
+    authorized: true,
+    source: 'lid_mapping',
+    lidMappingAttempted: true,
+    databaseLookupAttempted: false
+  })
+})
+
+await runAsyncTest('resolve administrador pela identidade persistida quando o mapa LID está vazio', async () => {
+  const sock = {
+    signalRepository: {
+      lidMapping: {
+        async getPNForLID() {
+          return undefined
+        }
+      }
+    }
+  }
+  const result = await resolveAdminAuthorization(
+    sock,
+    { key: { remoteJid: '123456789012345@lid' } },
+    ['5598999999999'],
+    async () => '5598999999999'
+  )
+  assert.deepEqual(result, {
+    authorized: true,
+    source: 'database',
+    lidMappingAttempted: true,
+    databaseLookupAttempted: true
+  })
+})
+
+runTest('autoriza administrador por PN alternativo quando a conversa usa LID', () => {
+  const message = {
+    key: {
+      remoteJid: '123456789012345@lid',
+      remoteJidAlt: '5598999999999@s.whatsapp.net'
+    }
+  }
+
+  assert.deepEqual(getMessageJidCandidates(message), [
+    '123456789012345@lid',
+    '5598999999999@s.whatsapp.net'
+  ])
+  assert.equal(getPhoneE164FromJids(getMessageJidCandidates(message)), '5598999999999')
+  assert.equal(isAdminMessageAuthorized(message, ['5598999999999']), true)
+})
+
+runTest('reconhece apenas intenções conversacionais fechadas', () => {
+  assert.equal(detectConversationIntent('quero documentos'), 'documents')
+  assert.equal(detectConversationIntent('quero documento'), 'documents')
+  assert.equal(detectConversationIntent('PPC'), 'course')
+  assert.equal(detectConversationIntent('falar com suporte'), 'support')
+  assert.equal(detectConversationIntent('voltar'), 'main')
+  assert.equal(detectConversationIntent('sair'), 'end')
+  assert.equal(detectConversationIntent('minha matrícula é 123'), null)
 })
 
 runTest('mascara telefone em logs técnicos', () => {
   assert.equal(maskPhone('5599999999999'), '5599****99')
+})
+
+runTest('mapeia eventos para códigos operacionais consistentes', () => {
+  assert.equal(resolveEventResultCode('DOCUMENT_SENT'), BotResultCode.OK)
+  assert.equal(resolveEventResultCode('INVALID_OPTION'), BotResultCode.BAD_REQUEST)
+  assert.equal(resolveEventResultCode('COMMAND_DENIED'), BotResultCode.FORBIDDEN)
+  assert.equal(resolveEventResultCode('COMMAND_UNKNOWN'), BotResultCode.NOT_FOUND)
+  assert.equal(resolveEventResultCode('RATE_LIMITED'), BotResultCode.TOO_MANY_REQUESTS)
+  assert.equal(resolveEventResultCode('DATABASE_UNAVAILABLE'), BotResultCode.SERVICE_UNAVAILABLE)
+})
+
+runTest('log técnico inclui código e correlação no envelope', () => {
+  const originalLog = console.log
+  const outputs = []
+  console.log = value => outputs.push(String(value))
+
+  try {
+    botLog('MESSAGE_RECEIVED', 'Teste de envelope', { correlationId: 'message-123' })
+  } finally {
+    console.log = originalLog
+  }
+
+  const payload = JSON.parse(outputs[0])
+  assert.equal(payload.code, 200)
+  assert.equal(payload.correlationId, 'message-123')
+  assert.equal(payload.service, 'firabot')
 })
 
 runTest('sanitiza conteúdo sensível em logs técnicos', () => {
@@ -199,6 +372,29 @@ runTest('sanitiza conteúdo sensível em logs técnicos', () => {
   assert.doesNotMatch(payload, /00000000000/)
   assert.doesNotMatch(payload, /senha-secreta/)
   assert.doesNotMatch(payload, /token-secreto/)
+})
+
+runTest('sanitiza dados sensíveis dentro de objetos aninhados', () => {
+  const originalLog = console.log
+  const outputs = []
+  console.log = value => outputs.push(String(value))
+
+  try {
+    botLog('MESSAGE_RECEIVED', 'Teste aninhado', {
+      details: {
+        token: 'token-aninhado',
+        body: 'conteúdo privado',
+        nested: { password: 'senha-aninhada' }
+      }
+    })
+  } finally {
+    console.log = originalLog
+  }
+
+  const payload = outputs.join('\n')
+  assert.doesNotMatch(payload, /token-aninhado/)
+  assert.doesNotMatch(payload, /conteúdo privado/)
+  assert.doesNotMatch(payload, /senha-aninhada/)
 })
 
 runTest('mensagem de sucesso de documento inclui resumo quando disponível', () => {
@@ -240,6 +436,7 @@ await runAsyncTest('não envia documento com caminho fora de DOCUMENTS_DIR', asy
   }
 
   assert.equal(result.success, false)
+  assert.equal(result.code, BotResultCode.FORBIDDEN)
   assert.match(result.errorMessage, /fora da pasta permitida/)
   assert.equal(messages.length, 1)
   assert.match(messages[0].content.text, /caminho do arquivo está inválido/)
@@ -275,7 +472,17 @@ runTest('mapeia categorias de PPC para carregamento dinâmico futuro', () => {
 
 runTest('mensagens do suporte orientam envio e confirmação', () => {
   assert.match(formatSupportPrompt(), /Descreva sua dúvida ou solicitação/)
+  assert.match(formatSupportPrompt(), /não envie senha/i)
   assert.match(formatSupportAcknowledgement(), /Sua mensagem foi registrada/)
+  assert.doesNotMatch(sanitizeSupportMessage('senha: segredo e token=abc123'), /segredo|abc123/)
+})
+
+await runAsyncTest('cancela follow-up pendente quando chega nova interação', async () => {
+  const { sock, messages } = createFakeSocket()
+  void sendFollowUp(sock, 'cancelamento@s.whatsapp.net', 20)
+  cancelPendingFollowUp('cancelamento@s.whatsapp.net')
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert.equal(messages.length, 0)
 })
 
 await runAsyncTest('lista editais do banco ou fallback local do IFMA', async () => {

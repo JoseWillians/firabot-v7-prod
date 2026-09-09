@@ -1,0 +1,57 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-firabot}
+      MYSQL_USER: ${MYSQL_USER:?Defina MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Defina MYSQL_PASSWORD}
+    volumes:
+      - firabot_mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - firabot_private
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${FIRABOT_ENV_FILE:-.env.production}
+    environment:
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-firabot}
+      DB_USER: ${MYSQL_USER:?Defina MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD:?Defina MYSQL_PASSWORD}
+      DOCUMENTS_DIR: /app/documentos
+      DEBUG_MODE: "false"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - firabot_auth:/app/auth
+      - ./documentos:/app/documentos:ro
+    networks:
+      - firabot_private
+      - firabot_outbound
+    stop_grace_period: 30s
+
+networks:
+  firabot_private:
+    internal: true
+  firabot_outbound:
+
+volumes:
+  firabot_mysql_data:
+  firabot_auth:

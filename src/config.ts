@@ -24,6 +24,7 @@ const toList = (value: string | undefined) => {
 }
 
 export const config = {
+  environment: process.env.NODE_ENV || 'development',
   botName: process.env.BOT_NAME || 'Firabot v7',
   campus: process.env.BOT_CAMPUS || process.env.CAMPUS_NAME || 'IFMA Santa Inês',
   documentsBasePath: process.env.DOCUMENTS_DIR || process.env.DOCUMENTS_BASE_PATH || './documentos',
@@ -33,9 +34,11 @@ export const config = {
   ignoreGroups: process.env.IGNORE_GROUPS ? toBoolean(process.env.IGNORE_GROUPS) : true,
   messageStartGraceSeconds: toNumber(process.env.MESSAGE_START_GRACE_SECONDS, 0),
   spamWindowMs: toNumber(process.env.SPAM_WINDOW_MS, 2500),
+  messageDedupTtlMs: toNumber(process.env.MESSAGE_DEDUP_TTL_MS, 10 * 60 * 1000),
   reconnectDelayMs: toNumber(process.env.RECONNECT_DELAY_MS, 5000),
   userStateTtlMinutes: toNumber(process.env.USER_STATE_TTL_MINUTES, 60),
   documentMaxSizeMb: toNumber(process.env.DOCUMENT_MAX_SIZE_MB, 25),
+  supportTicketRetentionDays: toNumber(process.env.SUPPORT_TICKET_RETENTION_DAYS, 0),
   adminNumbers: toList(process.env.ADMIN_NUMBERS),
   database: {
     host: process.env.DB_HOST,

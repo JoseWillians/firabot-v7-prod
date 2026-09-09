@@ -26,6 +26,7 @@ export async function sendDocumentWithTracking(
       menu,
       documentId: document.key,
       success: false,
+      resultCode: result.code,
       errorMessage: result.errorMessage
     })
     /**
@@ -44,6 +45,6 @@ export async function sendDocumentWithTracking(
    * opções do mesmo menu, que é justamente a continuidade esperada.
    */
   await sendContextualFollowUp(sock, userJid, siblingOptions || [], option)
-  botLog('DOCUMENT_SENT', 'Documento enviado', { user: userJid, option, menu: getMenuNameByState(currentState), stateBefore: currentState, stateAfter: currentState, documentId: document.key })
-  await registerUserLog(userJid, userName, sentMessage, currentState, 'DOCUMENT_SENT', { menu, documentId: document.key, success: true })
+  botLog('DOCUMENT_SENT', 'Documento enviado', { user: userJid, option, menu: getMenuNameByState(currentState), stateBefore: currentState, stateAfter: currentState, documentId: document.key, resultCode: result.code })
+  await registerUserLog(userJid, userName, sentMessage, currentState, 'DOCUMENT_SENT', { menu, documentId: document.key, success: true, resultCode: result.code })
 }

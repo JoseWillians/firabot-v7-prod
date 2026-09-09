@@ -1,5 +1,7 @@
 import { saveLog } from '../functions/database.js'
 import { config } from '../config.js'
+import { BotResultCode, BotResultCodeValue } from '../types/resultCode.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 export type BotEventType =
   | 'BOT_STARTED'
@@ -11,6 +13,7 @@ export type BotEventType =
   | 'MESSAGE_IGNORED_OLD'
   | 'MESSAGE_IGNORED_SELF'
   | 'MESSAGE_IGNORED_GROUP'
+  | 'MESSAGE_IGNORED_DUPLICATE'
   | 'SUPPORT_REQUEST'
   | 'COMMAND_EXECUTED'
   | 'COMMAND_DENIED'
@@ -40,6 +43,8 @@ export interface TechnicalLogContext {
   documentId?: string | number
   success?: boolean
   error?: unknown
+  resultCode?: BotResultCodeValue
+  correlationId?: string
   [key: string]: unknown
 }
 
@@ -52,10 +57,43 @@ export interface UserLogDetails {
   documentId?: string | number
   success?: boolean
   errorMessage?: string
+  resultCode?: BotResultCodeValue
+  correlationId?: string
 }
 
 const sensitiveKeys = new Set(['password', 'token', 'qr', 'secret', 'authorization'])
-const userContentKeys = new Set(['body', 'text', 'message', 'content'])
+const userContentKeys = new Set(['body', 'text', 'message', 'content', 'messagepreview', 'username'])
+const logContext = new AsyncLocalStorage<{ correlationId?: string }>()
+
+const eventResultCodes: Partial<Record<BotEventType, BotResultCodeValue>> = {
+  MESSAGE_IGNORED_OLD: BotResultCode.NO_CONTENT,
+  MESSAGE_IGNORED_SELF: BotResultCode.NO_CONTENT,
+  MESSAGE_IGNORED_GROUP: BotResultCode.NO_CONTENT,
+  MESSAGE_IGNORED_DUPLICATE: BotResultCode.CONFLICT,
+  SUPPORT_REQUEST: BotResultCode.ACCEPTED,
+  COMMAND_DENIED: BotResultCode.FORBIDDEN,
+  COMMAND_UNKNOWN: BotResultCode.NOT_FOUND,
+  DOCUMENT_REQUESTED: BotResultCode.ACCEPTED,
+  DOCUMENT_ERROR: BotResultCode.INTERNAL_ERROR,
+  INVALID_OPTION: BotResultCode.BAD_REQUEST,
+  RATE_LIMITED: BotResultCode.TOO_MANY_REQUESTS,
+  DATABASE_ERROR: BotResultCode.SERVICE_UNAVAILABLE,
+  DATABASE_UNAVAILABLE: BotResultCode.SERVICE_UNAVAILABLE,
+  WHATSAPP_SEND_ERROR: BotResultCode.SERVICE_UNAVAILABLE,
+  UNKNOWN_ERROR: BotResultCode.INTERNAL_ERROR
+}
+
+export function resolveEventResultCode(eventType: BotEventType, explicitCode?: BotResultCodeValue) {
+  return explicitCode ?? eventResultCodes[eventType] ?? BotResultCode.OK
+}
+
+export function runWithLogContext<T>(correlationId: string | undefined, callback: () => Promise<T>) {
+  return logContext.run({ correlationId }, callback)
+}
+
+function currentCorrelationId(explicit?: string) {
+  return explicit || logContext.getStore()?.correlationId
+}
 
 export function maskPhone(value: string) {
   const digits = value.replace(/\D/g, '')
@@ -72,20 +110,54 @@ function normalizeError(error: unknown) {
   return String(error)
 }
 
+function isSensitiveKey(key: string) {
+  const normalizedKey = key.toLowerCase()
+  return [...sensitiveKeys].some((sensitiveKey) => normalizedKey.includes(sensitiveKey))
+}
+
+/**
+ * Sanitiza todo o contexto, inclusive objetos aninhados. Integrações e erros
+ * podem carregar credenciais em propriedades internas, portanto uma limpeza
+ * apenas no primeiro nível deixaria dados sensíveis escaparem para o stdout.
+ */
+function sanitizeValue(key: string, value: unknown, seen: WeakSet<object>): unknown {
+  const normalizedKey = key.toLowerCase()
+
+  if (isSensitiveKey(normalizedKey)) return '[REDACTED]'
+  if (userContentKeys.has(normalizedKey) && typeof value === 'string') {
+    return `[USER_CONTENT_REDACTED:${value.length}]`
+  }
+  if (normalizedKey === 'user' && typeof value === 'string') return maskPhone(value)
+  if (normalizedKey === 'error' || value instanceof Error) return normalizeError(value)
+  if (value instanceof Date) return value.toISOString()
+  if (Buffer.isBuffer(value)) return `[BINARY:${value.length}]`
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[CIRCULAR]'
+    seen.add(value)
+    return value.map((item) => sanitizeValue('', item, seen))
+  }
+
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return '[CIRCULAR]'
+    seen.add(value)
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        sanitizeValue(childKey, childValue, seen)
+      ])
+    )
+  }
+
+  return value
+}
+
 function sanitizeContext(context?: TechnicalLogContext) {
   if (!context) return undefined
+  const seen = new WeakSet<object>()
 
   return Object.fromEntries(
-    Object.entries(context).map(([key, value]) => {
-      const normalizedKey = key.toLowerCase()
-      if (sensitiveKeys.has(normalizedKey)) return [key, '[REDACTED]']
-      if (userContentKeys.has(normalizedKey) && typeof value === 'string') {
-        return [key, `[USER_CONTENT_REDACTED:${value.length}]`]
-      }
-      if (key === 'user' && typeof value === 'string') return [key, maskPhone(value)]
-      if (key === 'error') return [key, normalizeError(value)]
-      return [key, value]
-    })
+    Object.entries(context).map(([key, value]) => [key, sanitizeValue(key, value, seen)])
   )
 }
 
@@ -95,20 +167,29 @@ function sanitizeContext(context?: TechnicalLogContext) {
  */
 export function debugLog(message: string, context?: TechnicalLogContext) {
   if (!config.debug && config.logLevel !== 'debug') return
+  const sanitizedContext = sanitizeContext(context)
   console.log(JSON.stringify({
+    service: 'firabot',
+    environment: config.environment,
     at: new Date().toISOString(),
     level: 'debug',
     eventType: context?.eventType || 'UNKNOWN_ERROR',
+    code: resolveEventResultCode((context?.eventType as BotEventType) || 'UNKNOWN_ERROR', context?.resultCode),
+    correlationId: currentCorrelationId(context?.correlationId),
     message,
-    context: sanitizeContext(context)
+    context: sanitizedContext
   }))
 }
 
 export function botLog(eventType: BotEventType, message: string, context?: TechnicalLogContext) {
   console.log(JSON.stringify({
+    service: 'firabot',
+    environment: config.environment,
     at: new Date().toISOString(),
     level: 'info',
     eventType,
+    code: resolveEventResultCode(eventType, context?.resultCode),
+    correlationId: currentCorrelationId(context?.correlationId),
     message,
     context: sanitizeContext(context)
   }))
@@ -116,9 +197,13 @@ export function botLog(eventType: BotEventType, message: string, context?: Techn
 
 export function errorLog(eventType: BotEventType, message: string, error: unknown, context?: TechnicalLogContext) {
   console.error(JSON.stringify({
+    service: 'firabot',
+    environment: config.environment,
     at: new Date().toISOString(),
     level: 'error',
     eventType,
+    code: resolveEventResultCode(eventType, context?.resultCode),
+    correlationId: currentCorrelationId(context?.correlationId),
     message,
     context: sanitizeContext({ ...context, error })
   }))
@@ -133,6 +218,8 @@ export async function registerUserLog(phoneNumber: string, userName: string, mes
   try {
     await saveLog(phoneNumber, userName, preview(message), state, eventType, {
       ...details,
+      resultCode: resolveEventResultCode(eventType, details.resultCode),
+      correlationId: currentCorrelationId(details.correlationId),
       eventType
     })
   } catch (error) {

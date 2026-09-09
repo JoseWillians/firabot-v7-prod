@@ -2,7 +2,7 @@ import { Command } from '../interfaces/Command.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
-import { isAdminJid } from '../services/adminAuthService.js'
+import { resolveAdminAuthorization } from '../services/adminAuthService.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -12,8 +12,7 @@ const helpCommand: Command = {
   description: 'Lista todos os comandos disponíveis e a finalidade do bot',
   alias: ['ajuda', 'menu'],
   execute: async (sock, msg, args) => {
-    const remoteJid = msg.key?.remoteJid || ''
-    const isAdmin = isAdminJid(remoteJid)
+    const isAdmin = (await resolveAdminAuthorization(sock, msg)).authorized
     const commandsPath = path.join(__dirname, '../commands')
     const files = fs.readdirSync(commandsPath).filter(file => file.endsWith('.ts') || file.endsWith('.js'))
 

@@ -1,7 +1,7 @@
 import { getUserStateRecord, setUserState } from '../functions/database.js'
 import { config } from '../config.js'
 import { UserState } from '../menus/types.js'
-import { botLog, errorLog } from './logService.js'
+import { botLog, debugLog, errorLog } from './logService.js'
 
 const allowedStates = new Set<UserState>([
   'main',
@@ -25,6 +25,12 @@ const allowedStates = new Set<UserState>([
 interface MemoryStateRecord {
   state: UserState
   updatedAt: Date
+}
+
+export interface UserStateLookupResult {
+  state: UserState
+  source: 'database' | 'memory' | 'default'
+  databaseAvailable: boolean
 }
 
 const memoryStates = new Map<string, MemoryStateRecord>()
@@ -54,7 +60,11 @@ export function isUserStateExpired(updatedAt: Date | null | undefined, now = new
  * O fallback não é silencioso: o erro é logado, porque perder estado no banco
  * pode fazer uma opção de submenu ser interpretada como menu principal.
  */
-export async function getCurrentUserState(phoneNumber: string): Promise<UserState> {
+export function canSafelyRouteNumericInput(result: UserStateLookupResult) {
+  return result.databaseAvailable || result.source === 'memory'
+}
+
+export async function getCurrentUserStateResult(phoneNumber: string): Promise<UserStateLookupResult> {
   try {
     const record = await getUserStateRecord(phoneNumber)
     const state = normalizeUserState(record.state)
@@ -68,11 +78,18 @@ export async function getCurrentUserState(phoneNumber: string): Promise<UserStat
         stateAfter: 'main',
         ttlMinutes: config.userStateTtlMinutes
       })
-      return 'main'
+      return { state: 'main', source: 'database', databaseAvailable: true }
     }
 
     memoryStates.set(phoneNumber, { state, updatedAt: record.updatedAt || new Date() })
-    return state
+    debugLog('Estado do usuário carregado', {
+      eventType: 'USER_STATE_READ',
+      user: phoneNumber,
+      stateAfter: state,
+      source: 'database',
+      resultCode: 200
+    })
+    return { state, source: 'database', databaseAvailable: true }
   } catch (error) {
     const fallback = memoryStates.get(phoneNumber)
     const fallbackState = fallback && !isUserStateExpired(fallback.updatedAt) ? fallback.state : undefined
@@ -80,8 +97,14 @@ export async function getCurrentUserState(phoneNumber: string): Promise<UserStat
       user: phoneNumber,
       fallback: fallbackState || 'main'
     })
-    return fallbackState || 'main'
+    return fallbackState
+      ? { state: fallbackState, source: 'memory', databaseAvailable: false }
+      : { state: 'main', source: 'default', databaseAvailable: false }
   }
+}
+
+export async function getCurrentUserState(phoneNumber: string): Promise<UserState> {
+  return (await getCurrentUserStateResult(phoneNumber)).state
 }
 
 export async function updateUserState(phoneNumber: string, state: UserState): Promise<UserState> {

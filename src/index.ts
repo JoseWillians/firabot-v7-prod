@@ -3,6 +3,8 @@ import { validateConfig } from './config.js'
 import { botLog, errorLog } from './services/logService.js'
 import { checkDatabaseConnection } from './functions/database.js'
 import { setDatabaseStatus, setRuntimeStartedAt } from './services/runtimeStatusService.js'
+import { technicalErrorLog } from './services/technicalLogger.js'
+import { BotResultCode } from './types/resultCode.js'
 
 /**
  * Ponto de entrada enxuto: toda configuração de conexão, reconexão e handlers
@@ -43,7 +45,8 @@ async function bootstrap() {
 bootstrap().catch(error => {
   try {
     errorLog('UNKNOWN_ERROR', 'Erro na inicialização', error)
-  } catch {
-    console.error('Erro na inicialização:', error)
+  } catch (loggingError) {
+    technicalErrorLog('UNKNOWN_ERROR', 'Falha ao registrar erro de inicialização', loggingError, BotResultCode.INTERNAL_ERROR)
   }
+  process.exitCode = 1
 })

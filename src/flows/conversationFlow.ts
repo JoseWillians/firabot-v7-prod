@@ -6,6 +6,25 @@ import { botLog, registerUserLog } from '../services/logService.js'
 import { formatMainMenu, getMenuNameByState } from '../services/menuService.js'
 import { updateUserState } from '../services/userStateService.js'
 
+const pendingFollowUps = new Map<string, NodeJS.Timeout>()
+
+export function cancelPendingFollowUp(jid: string) {
+  const timer = pendingFollowUps.get(jid)
+  if (!timer) return false
+  clearTimeout(timer)
+  pendingFollowUps.delete(jid)
+  return true
+}
+
+function scheduleFollowUp(jid: string, send: () => Promise<void>, delayMs: number) {
+  cancelPendingFollowUp(jid)
+  const timer = setTimeout(async () => {
+    pendingFollowUps.delete(jid)
+    await send()
+  }, delayMs)
+  pendingFollowUps.set(jid, timer)
+}
+
 export async function sendStartFlow(sock: WASocket, userJid: string, userName: string, logMessage: string) {
   await sendWelcome(sock, userJid, userName)
   await sendMainMenu(sock, userJid)
@@ -42,7 +61,7 @@ export async function sendFollowUp(sock: WASocket, jid: string, delayMs = 1500) 
     return
   }
 
-  setTimeout(send, delayMs)
+  scheduleFollowUp(jid, send, delayMs)
 }
 
 export async function sendContextualFollowUp(sock: WASocket, jid: string, options: MenuOption[], selectedOption: string) {
@@ -53,7 +72,7 @@ export async function sendContextualFollowUp(sock: WASocket, jid: string, option
    */
   const followUpText = formatContextualFollowUpMessage(options, selectedOption)
 
-  setTimeout(async () => {
+  scheduleFollowUp(jid, async () => {
     try {
       await sock.sendMessage(jid, { text: followUpText })
     } catch (error) {

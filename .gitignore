@@ -7,7 +7,11 @@ graphify-out
 logs/
 node_modules/
 .env
+.env.local
+.env.production
+.env.*.local
 *.log
 AGENTS.md
 db.txt
+memory.md
 

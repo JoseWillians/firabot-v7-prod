@@ -6,11 +6,19 @@ import { updateUserState } from '../services/userStateService.js'
 import { sendFollowUp } from './conversationFlow.js'
 
 export function formatSupportPrompt() {
-  return '👨‍💻 *Suporte*\n\nNo momento ainda não temos administradores setoriais atendendo pelo painel. Descreva sua dúvida ou solicitação em uma única mensagem que eu vou registrar aqui.'
+  return '👨‍💻 *Suporte*\n\nNo momento ainda não temos administradores setoriais atendendo pelo painel. Descreva sua dúvida ou solicitação em uma única mensagem que eu vou registrar aqui.\n\nPor segurança, não envie senha, token, dados bancários ou documentos pessoais completos.'
 }
 
 export function formatSupportAcknowledgement() {
   return '✅ Sua mensagem foi registrada. Assim que o suporte setorial estiver disponível, esse fluxo poderá encaminhar sua solicitação para o setor responsável.'
+}
+
+export function sanitizeSupportMessage(message: string) {
+  return message
+    .replace(/\b(senha|password|token|secret)\s*[:=]\s*\S+/gi, '$1: [DADO REMOVIDO]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500)
 }
 
 export async function openSupportFlow(sock: WASocket, userJid: string, userName: string, currentState: UserState) {
@@ -30,7 +38,7 @@ export async function handleSupportMessage(sock: WASocket, userJid: string, user
    * guardar CPF, matrícula, informação social ou outro dado sensível.
    */
   try {
-    await createSupportTicket(userJid, userName, message)
+    await createSupportTicket(userJid, userName, sanitizeSupportMessage(message))
   } catch (error) {
     errorLog('DATABASE_ERROR', 'Erro ao registrar chamado de suporte na fila administrativa', error, { user: userJid })
   }
