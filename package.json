@@ -2,13 +2,18 @@
   "name": "firabot-v7",
   "version": "1.0.0",
   "main": "index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "test": "npm run build && npm run test:no-build",
     "test:no-build": "node tests/run-tests.mjs",
+    "test:coverage": "npm run build:coverage && npm run test:coverage:no-build",
+    "test:coverage:no-build": "c8 node tests/run-tests.mjs",
     "test:integration": "node tests/integration/message-handler.integration.mjs",
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",
-    "ci:local": "npm run lint && npm run typecheck && npm run build && npm run test:no-build",
+    "ci:local": "npm run lint && npm run typecheck && npm run test:coverage",
     "db:backup": "node scripts/db-backup.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
     "db:cleanup:support": "node scripts/cleanup-support-tickets.mjs --confirm",
@@ -16,6 +21,8 @@
     "dev": "tsx src/index.ts",
     "clean": "rimraf dist",
     "build": "tsc",
+    "build:clean": "npm run clean && npm run build",
+    "build:coverage": "npm run clean && tsc -p tsconfig.coverage.json",
     "start": "node dist/index.js"
   },
   "keywords": [],
@@ -33,6 +40,7 @@
     "@eslint/js": "10.0.1",
     "@types/qrcode": "^1.5.6",
     "@types/qrcode-terminal": "^0.12.2",
+    "c8": "12.0.0",
     "eslint": "10.9.1",
     "globals": "17.12.0",
     "rimraf": "^6.0.1",

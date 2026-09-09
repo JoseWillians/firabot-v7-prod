@@ -28,8 +28,8 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Build
-        run: npm run build
+      - name: Build for coverage
+        run: npm run build:coverage
 
-      - name: Test without rebuild
-        run: npm run test:no-build
+      - name: Test with coverage gate
+        run: npm run test:coverage:no-build

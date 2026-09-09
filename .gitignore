@@ -1,4 +1,5 @@
 auth/
+coverage/
 database/backups/
 dist/
 docs/

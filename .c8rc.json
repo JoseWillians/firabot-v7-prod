@@ -1,0 +1,19 @@
+{
+  "all": true,
+  "include": [
+    "dist/**/*.js"
+  ],
+  "exclude": [
+    "dist/index.js"
+  ],
+  "reporter": [
+    "text",
+    "json-summary"
+  ],
+  "reports-dir": "coverage",
+  "check-coverage": true,
+  "lines": 45,
+  "statements": 45,
+  "functions": 40,
+  "branches": 60
+}

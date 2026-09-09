@@ -4,7 +4,7 @@ Bot de WhatsApp em TypeScript para atendimento acadêmico do IFMA Santa Inês. E
 
 ## Requisitos
 
-- Node.js LTS
+- Node.js 22.13 ou superior
 - npm ou yarn
 - MySQL
 - WhatsApp para leitura do QR Code
@@ -198,6 +198,19 @@ npm run ci:local
 Esse comando executa lint, verificação de tipos, build e testes unitários. Para
 rodar as etapas separadamente, use `npm run lint` e `npm run typecheck`.
 
+Relatório de cobertura com limiares mínimos:
+
+```bash
+npm run test:coverage
+```
+
+O relatório textual é exibido no terminal e o resumo JSON fica em
+`coverage/coverage-summary.json`. A CI exige, inicialmente, pelo menos 45% de
+linhas e statements, 40% de funções e 60% de branches. A pasta `coverage/` é
+gerada automaticamente e não deve ser versionada. O comando limpa e recompila
+`dist/` com source maps exclusivos para a medição, impedindo que artefatos antigos
+distorçam o resultado sem incluir esses mapas no build normal de produção.
+
 ## Estratégia de Logs
 
 O Firabot usa uma estratégia híbrida:
@@ -269,7 +282,7 @@ Links importantes e editais são carregados preferencialmente das tabelas `impor
 
 ## Testes e Qualidade
 
-O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, autorização administrativa, saída indisponível do status, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável.
+O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, autorização administrativa, saída indisponível do status, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável. `npm run test:coverage` executa a mesma suíte com medição pelo V8/c8 e falha se os limiares de qualidade regredirem.
 
 Com o MySQL Docker ativo e após um build confiável, o teste integrado pode ser
 executado no PowerShell com:
