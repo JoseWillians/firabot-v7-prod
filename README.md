@@ -44,7 +44,7 @@ Variáveis principais:
 - `RECONNECT_DELAY_MS`: atraso antes de tentar reconectar.
 - `USER_STATE_TTL_MINUTES`: tempo de expiração do estado de conversa; `0` desativa a expiração.
 - `DOCUMENT_MAX_SIZE_MB`: tamanho máximo de PDF para envio automático.
-- `ADMIN_NUMBERS`: números autorizados para comandos administrativos, separados por vírgula e com DDI/DDD.
+- `ADMIN_NUMBERS`: números autorizados para comandos administrativos, separados por vírgula, somente com DDI/DDD e 10 a 15 dígitos. Entradas inválidas são ignoradas de forma segura.
 - `SUPPORT_TICKET_RETENTION_DAYS`: retenção opt-in das solicitações de suporte; `0` mantém a limpeza automática desativada até aprovação institucional.
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`: conexão MySQL.
 - `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: opcionais para sobrescrever o MySQL local do `docker-compose.yml`.
@@ -195,6 +195,9 @@ Validação local equivalente ao CI:
 npm run ci:local
 ```
 
+Esse comando executa lint, verificação de tipos, build e testes unitários. Para
+rodar as etapas separadamente, use `npm run lint` e `npm run typecheck`.
+
 ## Estratégia de Logs
 
 O Firabot usa uma estratégia híbrida:
@@ -245,7 +248,7 @@ Não use as credenciais locais de desenvolvimento em produção.
 - `oi`, `olá`, `bom dia`, `boa tarde`, `boa noite`, `menu`, `iniciar`, `início`, `começar`, `ajuda`, `help`, `start`: iniciam atendimento sem prefixo.
 - `!help`: lista comandos técnicos disponíveis para o usuário atual.
 - `!ping`: verifica se o bot está ativo. Restrito a `ADMIN_NUMBERS`.
-- `!status`: mostra status de WhatsApp, banco, inicialização, ambiente, documentos ativos, documentos encontrados/ausentes e debug. Restrito a `ADMIN_NUMBERS`.
+- `!status`: mostra status de WhatsApp, banco, inicialização, ambiente, documentos ativos, documentos encontrados/ausentes e debug. Quando o banco está indisponível, as contagens aparecem como `indisponível`, com referência `503`, em vez de zero. Restrito a `ADMIN_NUMBERS`.
 - `!ifma`: mostra informações úteis do campus.
 - `encerrar`: encerra atendimento em fluxos de conversa.
 - `!encerrar`: encerra atendimento como comando técnico compatível.
@@ -266,7 +269,7 @@ Links importantes e editais são carregados preferencialmente das tabelas `impor
 
 ## Testes e Qualidade
 
-O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável.
+O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, autorização administrativa, saída indisponível do status, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável.
 
 Com o MySQL Docker ativo e após um build confiável, o teste integrado pode ser
 executado no PowerShell com:
@@ -276,8 +279,9 @@ $env:RUN_DB_INTEGRATION='true'
 npm run test:integration
 ```
 
-Ele valida o `messageHandler` com socket falso e banco real. O teste usa identidade
-sintética, confirma autorização LID/PN, saudação e estado `docs`, e remove seus
+Ele valida o `messageHandler` com socket falso e banco real. O teste usa identidades
+sintéticas, confirma `!ping` por fallback no banco e mapa LID, `!status` autorizado,
+negação `403`, atualização de nome, saudação e estado `docs`, e remove seus
 dados ao terminar. Ele não envia mensagens no WhatsApp real e recusa `DB_HOST`
 que não seja `127.0.0.1` ou `localhost`.
 

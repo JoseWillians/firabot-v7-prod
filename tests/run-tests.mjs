@@ -7,7 +7,14 @@ import {
 } from '../dist/services/messageGuardService.js'
 import { getMenuRouteForOption, shouldCaptureSupportMessage } from '../dist/services/menuRoutingService.js'
 import { canSafelyRouteNumericInput, isStateExpiredWithTtl, normalizeUserState } from '../dist/services/userStateService.js'
-import { isAdminMessageAuthorized, isAdminNumberAuthorized, normalizeAdminNumber, resolveAdminAuthorization } from '../dist/services/adminAuthService.js'
+import {
+  getAdminCommandDenial,
+  getValidAdminNumbers,
+  isAdminMessageAuthorized,
+  isAdminNumberAuthorized,
+  normalizeAdminNumber,
+  resolveAdminAuthorization
+} from '../dist/services/adminAuthService.js'
 import { botLog, maskPhone, resolveEventResultCode } from '../dist/services/logService.js'
 import { BotResultCode } from '../dist/types/resultCode.js'
 import { formatCourseMenu, formatMainMenu, formatMenu } from '../dist/services/menuService.js'
@@ -27,6 +34,7 @@ import {
   shouldProcessMessageId
 } from '../dist/services/messageBatchService.js'
 import { prepareLogMessageStorage } from '../dist/functions/database.js'
+import { formatStatusMessage } from '../dist/commands/status.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -241,9 +249,51 @@ runTest('detecta expiração de estado por TTL configurado', () => {
 runTest('normaliza e autoriza números administrativos', () => {
   assert.equal(normalizeAdminNumber('+55 (98) 99999-9999@s.whatsapp.net'), '5598999999999')
   assert.equal(normalizeAdminNumber('5598999999999:12@s.whatsapp.net'), '5598999999999')
-  assert.equal(isAdminNumberAuthorized('5598999999999@s.whatsapp.net', ['+55 (98) 99999-9999']), true)
+  assert.equal(isAdminNumberAuthorized('5598999999999@s.whatsapp.net', ['5598999999999']), true)
   assert.equal(isAdminNumberAuthorized('5598888888888@s.whatsapp.net', ['5598999999999']), false)
   assert.equal(isAdminNumberAuthorized('5598999999999@lid', ['5598999999999']), false)
+})
+
+runTest('descarta ADMIN_NUMBERS fora do formato E.164 plausível', () => {
+  assert.deepEqual(getValidAdminNumbers([
+    '123',
+    '5598999999999',
+    '+55 (98) 99999-9999',
+    'abc5598999999999xyz',
+    '5598999999999@g.us',
+    '0000000000'
+  ]), ['5598999999999'])
+  assert.deepEqual(getValidAdminNumbers(['abc5598999999999xyz']), [])
+  assert.deepEqual(getValidAdminNumbers(['5598999999999@g.us']), [])
+  assert.deepEqual(getValidAdminNumbers(['0000000000']), [])
+  assert.equal(isAdminNumberAuthorized('123@s.whatsapp.net', ['123']), false)
+})
+
+runTest('diferencia negação administrativa 403 de configuração ausente 503', () => {
+  assert.equal(getAdminCommandDenial(['5598999999999']).code, BotResultCode.FORBIDDEN)
+  assert.match(getAdminCommandDenial(['5598999999999']).message, /403/)
+  assert.equal(getAdminCommandDenial(['123', 'inválido']).code, BotResultCode.SERVICE_UNAVAILABLE)
+  assert.match(getAdminCommandDenial(['123', 'inválido']).message, /503/)
+})
+
+runTest('status não informa contagens zero quando o banco está indisponível', () => {
+  const text = formatStatusMessage({
+    runtime: {
+      startedAt: new Date('2026-09-09T12:00:00Z'),
+      whatsapp: 'connected',
+      database: 'unavailable'
+    },
+    databaseOk: false,
+    documentsHealth: null,
+    environment: 'test',
+    debug: false,
+    botName: 'Firabot v7'
+  })
+
+  assert.match(text, /Banco: unavailable.*503/s)
+  assert.match(text, /Documentos ativos no banco: indisponível/)
+  assert.match(text, /Status dos documentos: indisponível/)
+  assert.doesNotMatch(text, /Documentos ativos no banco: 0/)
 })
 
 await runAsyncTest('resolve administrador por mapeamento LID do socket', async () => {

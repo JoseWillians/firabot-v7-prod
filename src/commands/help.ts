@@ -11,7 +11,7 @@ const helpCommand: Command = {
   name: 'help',
   description: 'Lista todos os comandos disponíveis e a finalidade do bot',
   alias: ['ajuda', 'menu'],
-  execute: async (sock, msg, args) => {
+  execute: async (sock, msg) => {
     const isAdmin = (await resolveAdminAuthorization(sock, msg)).authorized
     const commandsPath = path.join(__dirname, '../commands')
     const files = fs.readdirSync(commandsPath).filter(file => file.endsWith('.ts') || file.endsWith('.js'))

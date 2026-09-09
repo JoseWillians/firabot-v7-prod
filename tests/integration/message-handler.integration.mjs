@@ -10,9 +10,15 @@ if (process.env.RUN_DB_INTEGRATION !== 'true') {
 
 // Estes identificadores são exclusivamente sintéticos e nunca devem representar
 // uma conta real. A configuração é aplicada antes dos imports do bot.
-const fakePhone = '5598999999999'
-const fakeLid = `integration-${Date.now()}@lid`
+const runId = String(Date.now())
+const phoneSuffix = runId.slice(-10)
+const fakePhone = `55${phoneSuffix}`
+const unauthorizedPhone = `56${phoneSuffix}`
+const fakeLid = `integration-${runId}@lid`
+const mappedLid = `integration-mapped-${runId}@lid`
+const unauthorizedLid = `integration-unauthorized-${runId}@lid`
 const fakePnJid = `${fakePhone}@s.whatsapp.net`
+const unauthorizedPnJid = `${unauthorizedPhone}@s.whatsapp.net`
 process.env.ADMIN_NUMBERS = fakePhone
 process.env.SPAM_WINDOW_MS = '0'
 process.env.IGNORE_OLD_MESSAGES = 'true'
@@ -40,12 +46,32 @@ const connection = await mysql.createConnection({
   charset: 'utf8mb4'
 })
 
+const syntheticJids = [fakeLid, mappedLid, unauthorizedLid, fakePnJid, unauthorizedPnJid]
+const syntheticPhones = [fakePhone, unauthorizedPhone]
+const jidPlaceholders = syntheticJids.map(() => '?').join(', ')
+const phonePlaceholders = syntheticPhones.map(() => '?').join(', ')
+const [collisions] = await connection.execute(
+  `SELECT id
+     FROM users
+    WHERE phone_number IN (${jidPlaceholders})
+       OR whatsapp_jid IN (${jidPlaceholders})
+       OR phone_e164 IN (${phonePlaceholders})
+    LIMIT 1`,
+  [...syntheticJids, ...syntheticJids, ...syntheticPhones]
+)
+
+if (collisions.length > 0) {
+  await connection.end()
+  await closeDatabasePool()
+  throw new Error('Teste de integração recusado: os identificadores sintéticos colidem com dados existentes.')
+}
+
 const sentMessages = []
 const socket = {
   signalRepository: {
     lidMapping: {
       async getPNForLID(lid) {
-        return undefined
+        return lid === mappedLid ? fakePnJid : undefined
       }
     }
   },
@@ -55,11 +81,11 @@ const socket = {
   }
 }
 
-const createMessage = (text, id, includeAlternateJid = true) => ({
+const createMessage = (text, id, remoteJid = fakeLid, alternateJid = fakePnJid) => ({
   key: {
     id,
-    remoteJid: fakeLid,
-    ...(includeAlternateJid ? { remoteJidAlt: fakePnJid } : {}),
+    remoteJid,
+    ...(alternateJid ? { remoteJidAlt: alternateJid } : {}),
     fromMe: false
   },
   pushName: 'Usuário de Integração',
@@ -67,16 +93,28 @@ const createMessage = (text, id, includeAlternateJid = true) => ({
   message: { conversation: text }
 })
 
-async function send(text, id, includeAlternateJid = true) {
-  await messageHandler(socket, { messages: [createMessage(text, id, includeAlternateJid)] }, {
+async function send(text, id, remoteJid = fakeLid, alternateJid = fakePnJid) {
+  await messageHandler(socket, { messages: [createMessage(text, id, remoteJid, alternateJid)] }, {
     startedAt: Math.floor(Date.now() / 1000) - 1
   })
 }
 
 try {
   await upsertUserIdentity(fakeLid, 'Usuário de Integração', [fakePnJid])
-  await send('!ping', 'integration-ping', false)
+  await send('!ping', 'integration-ping', fakeLid, null)
   assert.match(sentMessages.at(-1)?.content?.text || '', /Firabot está ativo/i)
+
+  await send('!ping', 'integration-ping-lid-mapping', mappedLid, null)
+  assert.match(sentMessages.at(-1)?.content?.text || '', /Firabot está ativo/i)
+
+  await send('!status', 'integration-status')
+  assert.match(sentMessages.at(-1)?.content?.text || '', /STATUS DO FIRABOT/)
+  assert.match(sentMessages.at(-1)?.content?.text || '', /Banco: connected/)
+  assert.match(sentMessages.at(-1)?.content?.text || '', /Documentos ativos no banco: \d+/)
+
+  await send('!status', 'integration-status-forbidden', unauthorizedLid, unauthorizedPnJid)
+  assert.match(sentMessages.at(-1)?.content?.text || '', /403/)
+  assert.doesNotMatch(sentMessages.at(-1)?.content?.text || '', /STATUS DO FIRABOT/)
 
   await send('oi', 'integration-greeting')
   assert.ok(sentMessages.some(item => /assistente virtual/i.test(item.content?.text || '')))
@@ -107,15 +145,24 @@ try {
   const userIdFromPhoneJid = await upsertUserIdentity(fakePnJid, 'Usuário Atualizado', [fakeLid])
   assert.equal(userIdFromPhoneJid, originalUserId)
 
+  const [updatedUsers] = await connection.execute(
+    'SELECT full_name FROM users WHERE id = ? LIMIT 1',
+    [originalUserId]
+  )
+  assert.equal(updatedUsers[0]?.full_name, 'Usuário Atualizado')
+
   const [identityCount] = await connection.execute(
     'SELECT COUNT(*) AS total FROM users WHERE phone_number IN (?, ?)',
     [fakeLid, fakePnJid]
   )
   assert.equal(Number(identityCount[0]?.total), 1)
 
-  console.log('Integração messageHandler + MySQL passou: admin LID/PN, identidade única, saudação e estado docs.')
+  console.log('Integração messageHandler + MySQL passou: !ping/!status, 403, LID/PN, identidade única, saudação e estado docs.')
 } finally {
-  await connection.execute('DELETE FROM users WHERE phone_number = ?', [fakeLid])
+  await connection.execute(
+    'DELETE FROM users WHERE phone_number IN (?, ?, ?)',
+    [fakeLid, mappedLid, unauthorizedLid]
+  )
   await connection.end()
   await closeDatabasePool()
 }

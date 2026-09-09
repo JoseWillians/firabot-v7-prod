@@ -6,9 +6,8 @@ import { Command } from '../interfaces/Command.js'
 import { UserState } from '../menus/types.js'
 import { sendEndFlow, sendStartFlow } from '../flows/conversationFlow.js'
 import { botLog, errorLog, registerUserLog } from '../services/logService.js'
-import { hasConfiguredAdmins, resolveAdminAuthorization } from '../services/adminAuthService.js'
+import { getAdminCommandDenial, resolveAdminAuthorization } from '../services/adminAuthService.js'
 import { getJidDomain } from '../services/userIdentityService.js'
-import { BotResultCode } from '../types/resultCode.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -65,28 +64,24 @@ export async function processCommand(
       : null
 
     if (command?.adminOnly && !adminAuthorization?.authorized) {
-      const adminsConfigured = hasConfiguredAdmins()
-      const resultCode = adminsConfigured ? BotResultCode.FORBIDDEN : BotResultCode.SERVICE_UNAVAILABLE
-      const denialMessage = adminsConfigured
-        ? '⚠️ Comando restrito a administradores autorizados. Código de referência: 403.'
-        : '⚠️ Os comandos administrativos ainda não foram configurados. Verifique ADMIN_NUMBERS e reinicie o bot. Código de referência: 503.'
+      const denial = getAdminCommandDenial()
 
-      await sock.sendMessage(userJid, { text: denialMessage })
+      await sock.sendMessage(userJid, { text: denial.message })
       botLog('COMMAND_DENIED', 'Comando administrativo bloqueado', {
         user: userJid,
         command: commandName,
-        adminsConfigured,
+        adminsConfigured: denial.adminsConfigured,
         jidDomain: getJidDomain(userJid),
         authorizationSource: adminAuthorization?.source,
         lidMappingAttempted: adminAuthorization?.lidMappingAttempted,
         databaseLookupAttempted: adminAuthorization?.databaseLookupAttempted,
         stateBefore: currentState,
-        resultCode
+        resultCode: denial.code
       })
       await registerUserLog(userJid, userName, `Comando restrito negado: !${commandName}`, currentState, 'COMMAND_DENIED', {
         command: commandName,
         success: false,
-        resultCode
+        resultCode: denial.code
       })
       return
     }

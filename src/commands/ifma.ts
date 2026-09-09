@@ -3,7 +3,7 @@ import { Command } from '../interfaces/Command.js'
 const ifmaCommand: Command = {
   name: 'ifma',
   description: 'Informações úteis do campus',
-  execute: async (sock, msg, args) => {
+  execute: async (sock, msg) => {
     const info = `*🏛️ INFORMAÇÕES IFMA*\n\n` +
                  `1 *Horários de Aula*: seg-sex (13:15 - 22:00)\n` +
                  `2 *Cardápio RU*:\n` +

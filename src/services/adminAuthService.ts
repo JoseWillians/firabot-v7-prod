@@ -1,6 +1,7 @@
 import { config } from '../config.js'
 import { getMessageJidCandidates, type WhatsAppMessageIdentity } from './userIdentityService.js'
 import { getStoredPhoneE164ForJids } from '../functions/database.js'
+import { BotResultCode, type BotResultCodeValue } from '../types/resultCode.js'
 
 export function normalizeAdminNumber(value: string) {
   const withoutDomain = value.split('@')[0] || value
@@ -8,10 +9,20 @@ export function normalizeAdminNumber(value: string) {
   return withoutDevice.replace(/\D/g, '')
 }
 
+export function isPlausibleAdminNumber(value: string) {
+  return /^[1-9]\d{9,14}$/.test(value.trim())
+}
+
+export function getValidAdminNumbers(values: string[]) {
+  return [...new Set(
+    values
+      .map(value => value.trim())
+      .filter(isPlausibleAdminNumber)
+  )]
+}
+
 export function getConfiguredAdminNumbers() {
-  return config.adminNumbers
-    .map(normalizeAdminNumber)
-    .filter(Boolean)
+  return getValidAdminNumbers(config.adminNumbers)
 }
 
 export function hasConfiguredAdmins() {
@@ -21,9 +32,31 @@ export function hasConfiguredAdmins() {
 export function isAdminNumberAuthorized(jid: string, adminNumbers: string[]) {
   if (jid.endsWith('@lid')) return false
   const candidate = normalizeAdminNumber(jid)
-  if (!candidate) return false
+  if (!isPlausibleAdminNumber(candidate)) return false
 
-  return adminNumbers.map(normalizeAdminNumber).includes(candidate)
+  return getValidAdminNumbers(adminNumbers).includes(candidate)
+}
+
+export interface AdminCommandDenial {
+  adminsConfigured: boolean
+  code: BotResultCodeValue
+  message: string
+}
+
+export function getAdminCommandDenial(adminNumbers = getConfiguredAdminNumbers()): AdminCommandDenial {
+  const adminsConfigured = getValidAdminNumbers(adminNumbers).length > 0
+
+  return adminsConfigured
+    ? {
+        adminsConfigured,
+        code: BotResultCode.FORBIDDEN,
+        message: '⚠️ Comando restrito a administradores autorizados. Código de referência: 403.'
+      }
+    : {
+        adminsConfigured,
+        code: BotResultCode.SERVICE_UNAVAILABLE,
+        message: '⚠️ Os comandos administrativos ainda não foram configurados. Verifique ADMIN_NUMBERS e reinicie o bot. Código de referência: 503.'
+      }
 }
 
 export function isAdminMessageAuthorized(message: WhatsAppMessageIdentity, adminNumbers = getConfiguredAdminNumbers()) {
