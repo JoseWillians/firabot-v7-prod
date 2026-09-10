@@ -22,23 +22,78 @@ import {
   isPrefixedCommand
 } from '../services/messageGuardService.js'
 
-interface MessageHandlerOptions {
+export interface MessageHandlerOptions {
   startedAt: number
+  ignoreGroups?: boolean
+  messageDedupTtlMs?: number
+}
+
+export interface MessageHandlerDependencies {
+  now: () => number
+  shouldProcessId: typeof shouldProcessMessageId
+  canRespond: typeof canRespondToUser
+  upsertIdentity: typeof upsertUserIdentity
+  getUserState: typeof getCurrentUserStateResult
+  updateState: typeof updateUserState
+  handleCommand: typeof processCommand
+  handleMenuOption: typeof processMenuOption
+  handleMainOption: typeof processMainOption
+  handleSupport: typeof handleSupportMessage
+  cancelFollowUp: typeof cancelPendingFollowUp
+  sendEnd: typeof sendEndFlow
+  sendMain: typeof sendMainMenu
+  sendStart: typeof sendStartFlow
+  sendUnknown: typeof sendUnknownMessage
+  writeBotLog: typeof botLog
+  writeDebugLog: typeof debugLog
+  writeErrorLog: typeof errorLog
+  writeUserLog: typeof registerUserLog
+  withLogContext: typeof runWithLogContext
 }
 
 export { sendMainMenu }
 
-export const messageHandler = async (sock: WASocket, m: { messages: proto.IWebMessageInfo[] }, options: MessageHandlerOptions) => {
+const defaultDependencies: MessageHandlerDependencies = {
+  now: () => Date.now(),
+  shouldProcessId: shouldProcessMessageId,
+  canRespond: canRespondToUser,
+  upsertIdentity: upsertUserIdentity,
+  getUserState: getCurrentUserStateResult,
+  updateState: updateUserState,
+  handleCommand: processCommand,
+  handleMenuOption: processMenuOption,
+  handleMainOption: processMainOption,
+  handleSupport: handleSupportMessage,
+  cancelFollowUp: cancelPendingFollowUp,
+  sendEnd: sendEndFlow,
+  sendMain: sendMainMenu,
+  sendStart: sendStartFlow,
+  sendUnknown: sendUnknownMessage,
+  writeBotLog: botLog,
+  writeDebugLog: debugLog,
+  writeErrorLog: errorLog,
+  writeUserLog: registerUserLog,
+  withLogContext: runWithLogContext
+}
+
+export const messageHandler = async (
+  sock: WASocket,
+  m: { messages: proto.IWebMessageInfo[] },
+  options: MessageHandlerOptions,
+  dependencyOverrides: Partial<MessageHandlerDependencies> = {}
+) => {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   await processMessageBatch(
     m.messages,
     async msg => {
-      await runWithLogContext(msg.key?.id || undefined, async () => {
-        await handleMessage(sock, msg, options)
+      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+        await handleMessage(sock, msg, options, dependencies)
       })
     },
     async (error, msg) => {
-      await runWithLogContext(msg.key?.id || undefined, async () => {
-        errorLog('UNKNOWN_ERROR', 'Erro isolado ao processar item do lote de mensagens', error, {
+      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+        dependencies.writeErrorLog('UNKNOWN_ERROR', 'Erro isolado ao processar item do lote de mensagens', error, {
           user: msg.key?.remoteJid || undefined,
           resultCode: 500
         })
@@ -47,30 +102,37 @@ export const messageHandler = async (sock: WASocket, m: { messages: proto.IWebMe
   )
 }
 
-async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options: MessageHandlerOptions) {
+async function handleMessage(
+  sock: WASocket,
+  msg: proto.IWebMessageInfo,
+  options: MessageHandlerOptions,
+  dependencies: MessageHandlerDependencies
+) {
   const remoteJid = msg.key?.remoteJid
   if (!remoteJid) return
 
   if (!msg.message || remoteJid === 'status@broadcast') return
 
   if (msg.key?.fromMe) {
-    debugLog('Mensagem ignorada por ter sido enviada pelo próprio bot', { eventType: 'MESSAGE_IGNORED_SELF' })
+    dependencies.writeDebugLog('Mensagem ignorada por ter sido enviada pelo próprio bot', { eventType: 'MESSAGE_IGNORED_SELF' })
     return
   }
 
-  if (config.ignoreGroups && remoteJid?.endsWith('@g.us')) {
-    debugLog('Mensagem de grupo ignorada pela configuração atual', { eventType: 'MESSAGE_IGNORED_GROUP', user: remoteJid })
+  const ignoreGroups = options.ignoreGroups ?? config.ignoreGroups
+  if (ignoreGroups && remoteJid.endsWith('@g.us')) {
+    dependencies.writeDebugLog('Mensagem de grupo ignorada pela configuração atual', { eventType: 'MESSAGE_IGNORED_GROUP', user: remoteJid })
     return
   }
 
   const timestamp = getMessageTimestamp(msg)
   if (isMessageFromBeforeStart(timestamp, options.startedAt)) {
-    debugLog('Mensagem antiga ignorada', { eventType: 'MESSAGE_IGNORED_OLD', user: remoteJid, timestamp, startedAt: options.startedAt })
+    dependencies.writeDebugLog('Mensagem antiga ignorada', { eventType: 'MESSAGE_IGNORED_OLD', user: remoteJid, timestamp, startedAt: options.startedAt })
     return
   }
 
-  if (!shouldProcessMessageId(msg.key?.id || undefined, Date.now(), config.messageDedupTtlMs)) {
-    debugLog('Mensagem duplicada ignorada', {
+  const messageDedupTtlMs = options.messageDedupTtlMs ?? config.messageDedupTtlMs
+  if (!dependencies.shouldProcessId(msg.key?.id || undefined, dependencies.now(), messageDedupTtlMs)) {
+    dependencies.writeDebugLog('Mensagem duplicada ignorada', {
       eventType: 'MESSAGE_IGNORED_DUPLICATE',
       user: remoteJid,
       correlationId: msg.key?.id || undefined,
@@ -84,20 +146,20 @@ async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options
   const body = extractMessageText(msg.message)
 
   if (!body) return
-  cancelPendingFollowUp(userJid)
+  dependencies.cancelFollowUp(userJid)
 
   try {
-    await upsertUserIdentity(userJid, userName, getMessageJidCandidates(msg))
+    await dependencies.upsertIdentity(userJid, userName, getMessageJidCandidates(msg))
   } catch (error) {
-    errorLog('DATABASE_ERROR', 'Não foi possível enriquecer a identidade do usuário', error, {
+    dependencies.writeErrorLog('DATABASE_ERROR', 'Não foi possível enriquecer a identidade do usuário', error, {
       user: userJid,
       resultCode: 503
     })
   }
 
-  const stateLookup = await getCurrentUserStateResult(userJid)
+  const stateLookup = await dependencies.getUserState(userJid)
   const currentState = stateLookup.state
-  botLog('MESSAGE_RECEIVED', 'Mensagem recebida', {
+  dependencies.writeBotLog('MESSAGE_RECEIVED', 'Mensagem recebida', {
     user: userJid,
     messageLength: body.length,
     isCommand: isPrefixedCommand(body),
@@ -106,35 +168,35 @@ async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options
   })
 
   if (isPrefixedCommand(body)) {
-    await processCommand(sock, msg, body, userJid, userName, currentState)
+    await dependencies.handleCommand(sock, msg, body, userJid, userName, currentState)
     return
   }
 
   if (body.trim().toLowerCase() === 'encerrar') {
-    await sendEndFlow(sock, userJid, userName, currentState)
+    await dependencies.sendEnd(sock, userJid, userName, currentState)
     return
   }
 
-  if (!canRespondToUser(`${userJid}:${body.toLowerCase()}`)) {
-    debugLog('Resposta ignorada por proteção anti-spam', { eventType: 'RATE_LIMITED', user: userJid, messageLength: body.length })
+  if (!dependencies.canRespond(`${userJid}:${body.toLowerCase()}`)) {
+    dependencies.writeDebugLog('Resposta ignorada por proteção anti-spam', { eventType: 'RATE_LIMITED', user: userJid, messageLength: body.length })
     return
   }
 
   if (isGreetingOrStartMessage(body)) {
-    await sendStartFlow(sock, userJid, userName, `Início: ${body}`)
+    await dependencies.sendStart(sock, userJid, userName, `Início: ${body}`)
     return
   }
 
   const intent = detectConversationIntent(body)
   if (intent === 'end') {
-    await sendEndFlow(sock, userJid, userName, currentState)
+    await dependencies.sendEnd(sock, userJid, userName, currentState)
     return
   }
 
   if (intent === 'main') {
-    await sendMainMenu(sock, userJid)
-    const stateAfter = await updateUserState(userJid, 'main')
-    await registerUserLog(userJid, userName, 'Retorno ao menu principal por intenção', currentState, 'USER_STATE_CHANGED', {
+    await dependencies.sendMain(sock, userJid)
+    const stateAfter = await dependencies.updateState(userJid, 'main')
+    await dependencies.writeUserLog(userJid, userName, 'Retorno ao menu principal por intenção', currentState, 'USER_STATE_CHANGED', {
       stateBefore: currentState,
       stateAfter,
       menu: 'menu principal',
@@ -145,7 +207,7 @@ async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options
 
   const mainOptionByIntent = { documents: '2', course: '3', support: '7' } as const
   if (intent && intent in mainOptionByIntent) {
-    await processMainOption(sock, userJid, userName, mainOptionByIntent[intent as keyof typeof mainOptionByIntent], currentState)
+    await dependencies.handleMainOption(sock, userJid, userName, mainOptionByIntent[intent as keyof typeof mainOptionByIntent], currentState)
     return
   }
 
@@ -153,14 +215,14 @@ async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options
     await sock.sendMessage(userJid, {
       text: 'Não consegui recuperar o andamento do seu atendimento agora. Tente novamente em alguns instantes ou envie menu para reiniciar. Código de referência: 503.'
     })
-    botLog('DATABASE_UNAVAILABLE', 'Opção numérica bloqueada sem estado confiável', {
+    dependencies.writeBotLog('DATABASE_UNAVAILABLE', 'Opção numérica bloqueada sem estado confiável', {
       user: userJid,
       stateBefore: currentState,
       stateSource: stateLookup.source,
       resultCode: 503,
       correlationId: msg.key?.id || undefined
     })
-    await registerUserLog(userJid, userName, 'Opção numérica bloqueada por indisponibilidade do estado', currentState, 'DATABASE_UNAVAILABLE', {
+    await dependencies.writeUserLog(userJid, userName, 'Opção numérica bloqueada por indisponibilidade do estado', currentState, 'DATABASE_UNAVAILABLE', {
       stateBefore: currentState,
       success: false,
       resultCode: 503,
@@ -170,15 +232,15 @@ async function handleMessage(sock: WASocket, msg: proto.IWebMessageInfo, options
   }
 
   if (shouldCaptureSupportMessage(currentState, body)) {
-    await handleSupportMessage(sock, userJid, userName, body, currentState)
+    await dependencies.handleSupport(sock, userJid, userName, body, currentState)
     return
   }
 
   if (isNumericOption(body)) {
-    await processMenuOption(sock, userJid, userName, body, currentState)
+    await dependencies.handleMenuOption(sock, userJid, userName, body, currentState)
     return
   }
 
-  await sendUnknownMessage(sock, userJid, currentState)
-  await registerUserLog(userJid, userName, `Mensagem não compreendida (${body.length} caracteres)`, currentState, 'INVALID_OPTION', { stateBefore: currentState, success: false })
+  await dependencies.sendUnknown(sock, userJid, currentState)
+  await dependencies.writeUserLog(userJid, userName, `Mensagem não compreendida (${body.length} caracteres)`, currentState, 'INVALID_OPTION', { stateBefore: currentState, success: false })
 }

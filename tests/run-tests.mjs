@@ -44,6 +44,8 @@ import {
   getReconnectDecision
 } from '../dist/services/connectionPolicyService.js'
 import { processCommand } from '../dist/handlers/commandHandler.js'
+import { processMenuOption } from '../dist/handlers/menuOptionHandler.js'
+import { messageHandler } from '../dist/middlewares/messageHandler.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -93,6 +95,78 @@ function createCommandDependencies(overrides = {}) {
       writeTechnicalLog: (...args) => events.push({ type: 'technical-log', args }),
       writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
       resolveJidDomain: () => 's.whatsapp.net',
+      ...overrides
+    }
+  }
+}
+
+function createMessage(overrides = {}) {
+  return {
+    key: {
+      id: 'message-test',
+      remoteJid: 'user@s.whatsapp.net',
+      fromMe: false
+    },
+    message: { conversation: 'texto desconhecido' },
+    messageTimestamp: 200,
+    pushName: 'Aluno',
+    ...overrides
+  }
+}
+
+function createMessageDependencies(overrides = {}) {
+  const events = []
+  return {
+    events,
+    dependencies: {
+      now: () => 1_000,
+      shouldProcessId: () => true,
+      canRespond: () => true,
+      upsertIdentity: async (...args) => events.push({ type: 'upsert', args }),
+      getUserState: async () => ({ state: 'main', source: 'database', databaseAvailable: true }),
+      updateState: async (_jid, state) => {
+        events.push({ type: 'update-state', state })
+        return state
+      },
+      handleCommand: async (...args) => events.push({ type: 'command', args }),
+      handleMenuOption: async (...args) => events.push({ type: 'menu-option', args }),
+      handleMainOption: async (...args) => events.push({ type: 'main-option', args }),
+      handleSupport: async (...args) => events.push({ type: 'support', args }),
+      cancelFollowUp: (...args) => events.push({ type: 'cancel-follow-up', args }),
+      sendEnd: async (...args) => events.push({ type: 'end', args }),
+      sendMain: async (...args) => events.push({ type: 'main', args }),
+      sendStart: async (...args) => events.push({ type: 'start', args }),
+      sendUnknown: async (...args) => events.push({ type: 'unknown', args }),
+      writeBotLog: (...args) => events.push({ type: 'bot-log', args }),
+      writeDebugLog: (...args) => events.push({ type: 'debug-log', args }),
+      writeErrorLog: (...args) => events.push({ type: 'error-log', args }),
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
+      withLogContext: (_correlationId, callback) => callback(),
+      ...overrides
+    }
+  }
+}
+
+function createMenuDependencies(overrides = {}) {
+  const events = []
+  const record = type => async (...args) => events.push({ type, args })
+  return {
+    events,
+    dependencies: {
+      sendMain: record('main'),
+      sendUnknown: record('unknown'),
+      updateState: async (_jid, state) => {
+        events.push({ type: 'update-state', state })
+        return state
+      },
+      writeBotLog: (...args) => events.push({ type: 'bot-log', args }),
+      writeUserLog: record('user-log'),
+      handleDocsCategory: record('docs'),
+      handleDrcaDocs: record('docs-drca'),
+      handleCaeDocs: record('docs-cae'),
+      handleCourseSelection: record('course'),
+      handlePpcDocument: record('ppc'),
+      handleMainOption: record('main-option'),
       ...overrides
     }
   }
@@ -286,6 +360,167 @@ await runAsyncTest('dispatcher autoriza comando administrativo e rejeita comando
 
   assert.match(unknownSocket.messages[0].content.text, /404/)
   assert.equal(unknown.events.at(-1).type, 'user-log')
+})
+
+await runAsyncTest('message handler permite grupo quando a opção da chamada libera', async () => {
+  const fixture = createMessageDependencies()
+  const { sock } = createFakeSocket()
+  const groupMessage = createMessage({
+    key: { id: 'group-allowed', remoteJid: 'group@g.us', fromMe: false }
+  })
+
+  await messageHandler(sock, { messages: [groupMessage] }, {
+    startedAt: 100,
+    ignoreGroups: false,
+    messageDedupTtlMs: 10_000
+  }, fixture.dependencies)
+
+  assert.equal(fixture.events.some(event => event.type === 'upsert'), true)
+  assert.equal(fixture.events.some(event => event.type === 'unknown'), true)
+})
+
+await runAsyncTest('message handler ignora remetente próprio, grupo bloqueado, mensagem antiga e duplicada', async () => {
+  const scenarios = [
+    {
+      message: createMessage({ key: { id: 'self', remoteJid: 'user@s.whatsapp.net', fromMe: true } }),
+      options: { startedAt: 100, ignoreGroups: false },
+      eventType: 'MESSAGE_IGNORED_SELF'
+    },
+    {
+      message: createMessage({ key: { id: 'group', remoteJid: 'group@g.us', fromMe: false } }),
+      options: { startedAt: 100, ignoreGroups: true },
+      eventType: 'MESSAGE_IGNORED_GROUP'
+    },
+    {
+      message: createMessage({ key: { id: 'old', remoteJid: 'user@s.whatsapp.net', fromMe: false }, messageTimestamp: 1 }),
+      options: { startedAt: 100, ignoreGroups: false },
+      eventType: 'MESSAGE_IGNORED_OLD'
+    }
+  ]
+
+  for (const scenario of scenarios) {
+    const fixture = createMessageDependencies()
+    const { sock } = createFakeSocket()
+    await messageHandler(sock, { messages: [scenario.message] }, scenario.options, fixture.dependencies)
+
+    const debugEvent = fixture.events.find(event => event.type === 'debug-log')
+    assert.equal(debugEvent.args[1].eventType, scenario.eventType)
+    assert.equal(fixture.events.some(event => event.type === 'upsert'), false)
+  }
+
+  const duplicate = createMessageDependencies({ shouldProcessId: () => false })
+  await messageHandler(createFakeSocket().sock, { messages: [createMessage()] }, {
+    startedAt: 100,
+    ignoreGroups: false
+  }, duplicate.dependencies)
+  assert.equal(duplicate.events.find(event => event.type === 'debug-log').args[1].eventType, 'MESSAGE_IGNORED_DUPLICATE')
+  assert.equal(duplicate.events.some(event => event.type === 'upsert'), false)
+})
+
+await runAsyncTest('message handler continua após falha de identidade e isola falha entre itens do lote', async () => {
+  let stateCalls = 0
+  const fixture = createMessageDependencies({
+    upsertIdentity: async () => { throw new Error('falha controlada de identidade') },
+    getUserState: async () => {
+      stateCalls += 1
+      if (stateCalls === 1) throw new Error('falha controlada de estado')
+      return { state: 'main', source: 'database', databaseAvailable: true }
+    }
+  })
+
+  await messageHandler(createFakeSocket().sock, {
+    messages: [
+      createMessage({ key: { id: 'state-error', remoteJid: 'first@s.whatsapp.net', fromMe: false } }),
+      createMessage({ key: { id: 'state-ok', remoteJid: 'second@s.whatsapp.net', fromMe: false } })
+    ]
+  }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+
+  assert.equal(fixture.events.filter(event => event.type === 'error-log').length, 3)
+  assert.equal(fixture.events.some(event => event.type === 'unknown'), true)
+})
+
+await runAsyncTest('message handler roteia comandos, conversa, suporte, números e fallback', async () => {
+  const scenarios = [
+    { body: '!ping', expected: 'command' },
+    { body: 'encerrar', expected: 'end' },
+    { body: 'oi', expected: 'start' },
+    { body: 'terminar conversa', expected: 'end' },
+    { body: 'voltar ao menu', expected: 'main' },
+    { body: 'documentos', expected: 'main-option', option: '2' },
+    { body: 'ppc', expected: 'main-option', option: '3' },
+    { body: 'suporte', expected: 'main-option', option: '7' },
+    { body: 'protocolo 123', state: 'suporte', expected: 'support' },
+    { body: '2', state: 'docs', expected: 'menu-option' },
+    { body: 'não reconhecida', expected: 'unknown' }
+  ]
+
+  for (const [index, scenario] of scenarios.entries()) {
+    const fixture = createMessageDependencies({
+      getUserState: async () => ({
+        state: scenario.state || 'main',
+        source: 'database',
+        databaseAvailable: true
+      })
+    })
+    const { sock } = createFakeSocket()
+    await messageHandler(sock, {
+      messages: [createMessage({
+        key: { id: `route-${index}`, remoteJid: 'user@s.whatsapp.net', fromMe: false },
+        message: { conversation: scenario.body }
+      })]
+    }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+
+    const routeEvent = fixture.events.find(event => event.type === scenario.expected)
+    assert.ok(routeEvent, `rota ausente para ${scenario.body}`)
+    if (scenario.option) assert.equal(routeEvent.args[3], scenario.option)
+  }
+
+  const limited = createMessageDependencies({ canRespond: () => false })
+  await messageHandler(createFakeSocket().sock, {
+    messages: [createMessage({ message: { conversation: 'texto limitado' } })]
+  }, { startedAt: 100, ignoreGroups: false }, limited.dependencies)
+  assert.equal(limited.events.find(event => event.type === 'debug-log').args[1].eventType, 'RATE_LIMITED')
+})
+
+await runAsyncTest('message handler bloqueia número quando o estado do banco não é confiável', async () => {
+  const fixture = createMessageDependencies({
+    getUserState: async () => ({ state: 'main', source: 'default', databaseAvailable: false })
+  })
+  const { sock, messages } = createFakeSocket()
+
+  await messageHandler(sock, {
+    messages: [createMessage({ message: { conversation: '2' } })]
+  }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+
+  assert.match(messages[0].content.text, /503/)
+  assert.equal(fixture.events.some(event => event.type === 'menu-option'), false)
+  assert.equal(fixture.events.filter(event => event.type === 'user-log').length, 1)
+})
+
+await runAsyncTest('menu option handler cobre retorno, estado informativo e todas as rotas numéricas', async () => {
+  const { sock } = createFakeSocket()
+  const back = createMenuDependencies()
+  await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '0', 'docs', back.dependencies)
+  assert.deepEqual(back.events.map(event => event.type), ['main', 'update-state', 'bot-log', 'user-log'])
+
+  const informational = createMenuDependencies()
+  await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'biblioteca', informational.dependencies)
+  assert.deepEqual(informational.events.map(event => event.type), ['unknown', 'user-log'])
+
+  const routes = [
+    { state: 'docs', expected: 'docs' },
+    { state: 'docs_drca', expected: 'docs-drca' },
+    { state: 'docs_cae', expected: 'docs-cae' },
+    { state: 'curso', expected: 'course' },
+    { state: 'curso_eng_comp', expected: 'ppc' },
+    { state: 'main', expected: 'main-option' }
+  ]
+
+  for (const route of routes) {
+    const fixture = createMenuDependencies()
+    await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '1', route.state, fixture.dependencies)
+    assert.deepEqual(fixture.events.map(event => event.type), [route.expected])
+  }
 })
 
 await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
