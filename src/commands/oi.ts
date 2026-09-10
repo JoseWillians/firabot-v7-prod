@@ -1,5 +1,5 @@
 import { Command } from '../interfaces/Command.js'
-import { sendMainMenu } from '../middlewares/messageHandler.js' //
+import { sendMainMenu } from '../flows/conversationFlow.js'
 
 const oiCommand: Command = {
   name: 'oi',

@@ -32,53 +32,80 @@ const commandsReady = loadCommands().catch(error => {
   errorLog('UNKNOWN_ERROR', 'Erro ao carregar comandos', error)
 })
 
+export interface ProcessCommandDependencies {
+  commandRegistry: ReadonlyMap<string, Command>
+  ensureCommandsReady: () => Promise<void>
+  sendEnd: typeof sendEndFlow
+  sendStart: typeof sendStartFlow
+  authorizeAdmin: typeof resolveAdminAuthorization
+  getAdminDenial: typeof getAdminCommandDenial
+  writeTechnicalLog: typeof botLog
+  writeUserLog: typeof registerUserLog
+  resolveJidDomain: typeof getJidDomain
+}
+
+const defaultDependencies: ProcessCommandDependencies = {
+  commandRegistry: commands,
+  ensureCommandsReady: () => commandsReady,
+  sendEnd: sendEndFlow,
+  sendStart: sendStartFlow,
+  authorizeAdmin: resolveAdminAuthorization,
+  getAdminDenial: getAdminCommandDenial,
+  writeTechnicalLog: botLog,
+  writeUserLog: registerUserLog,
+  resolveJidDomain: getJidDomain
+}
+
 export async function processCommand(
   sock: WASocket,
   msg: proto.IWebMessageInfo,
   body: string,
   userJid: string,
   userName: string,
-  currentState: UserState
+  currentState: UserState,
+  dependencyOverrides: Partial<ProcessCommandDependencies> = {}
 ) {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   if (body.toLowerCase() === '!encerrar') {
-    await sendEndFlow(sock, userJid, userName, currentState)
+    await dependencies.sendEnd(sock, userJid, userName, currentState)
     return
   }
-
-  await commandsReady
 
   const commandInput = body.slice(1).trim().toLowerCase()
   const args = commandInput.split(/ +/)
   const commandName = args.shift()
 
   if (commandName && ['oi', 'menu', 'start', 'ajuda'].includes(commandName)) {
-    await sendStartFlow(sock, userJid, userName, `Início: !${commandName}`)
+    await dependencies.sendStart(sock, userJid, userName, `Início: !${commandName}`)
     return
   }
 
-  if (commandName && commands.has(commandName)) {
-    const command = commands.get(commandName)
+  await dependencies.ensureCommandsReady()
+
+  if (commandName && dependencies.commandRegistry.has(commandName)) {
+    const command = dependencies.commandRegistry.get(commandName)
 
     const adminAuthorization = command?.adminOnly
-      ? await resolveAdminAuthorization(sock, msg)
+      ? await dependencies.authorizeAdmin(sock, msg)
       : null
 
     if (command?.adminOnly && !adminAuthorization?.authorized) {
-      const denial = getAdminCommandDenial()
+      const denial = dependencies.getAdminDenial()
 
       await sock.sendMessage(userJid, { text: denial.message })
-      botLog('COMMAND_DENIED', 'Comando administrativo bloqueado', {
+      dependencies.writeTechnicalLog('COMMAND_DENIED', 'Comando administrativo bloqueado', {
         user: userJid,
         command: commandName,
         adminsConfigured: denial.adminsConfigured,
-        jidDomain: getJidDomain(userJid),
+        jidDomain: dependencies.resolveJidDomain(userJid),
         authorizationSource: adminAuthorization?.source,
         lidMappingAttempted: adminAuthorization?.lidMappingAttempted,
         databaseLookupAttempted: adminAuthorization?.databaseLookupAttempted,
         stateBefore: currentState,
         resultCode: denial.code
       })
-      await registerUserLog(userJid, userName, `Comando restrito negado: !${commandName}`, currentState, 'COMMAND_DENIED', {
+      await dependencies.writeUserLog(userJid, userName, `Comando restrito negado: !${commandName}`, currentState, 'COMMAND_DENIED', {
         command: commandName,
         success: false,
         resultCode: denial.code
@@ -88,17 +115,17 @@ export async function processCommand(
 
     await command?.execute(sock, msg, args)
     if (command?.adminOnly) {
-      botLog('COMMAND_EXECUTED', 'Comando administrativo autorizado', {
+      dependencies.writeTechnicalLog('COMMAND_EXECUTED', 'Comando administrativo autorizado', {
         user: userJid,
         command: commandName,
         authorizationSource: adminAuthorization?.source,
         stateBefore: currentState
       })
     }
-    await registerUserLog(userJid, userName, `Comando: !${commandName}`, currentState, 'COMMAND_EXECUTED', { command: commandName, success: true })
+    await dependencies.writeUserLog(userJid, userName, `Comando: !${commandName}`, currentState, 'COMMAND_EXECUTED', { command: commandName, success: true })
     return
   }
 
   await sock.sendMessage(userJid, { text: '⚠️ Comando não reconhecido. Use !help para ver os comandos disponíveis. Código de referência: 404.' })
-  await registerUserLog(userJid, userName, `Comando desconhecido: ${commandName || 'vazio'}`, currentState, 'COMMAND_UNKNOWN', { command: commandName || 'vazio', success: false })
+  await dependencies.writeUserLog(userJid, userName, `Comando desconhecido: ${commandName || 'vazio'}`, currentState, 'COMMAND_UNKNOWN', { command: commandName || 'vazio', success: false })
 }

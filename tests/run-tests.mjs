@@ -35,6 +35,15 @@ import {
 } from '../dist/services/messageBatchService.js'
 import { prepareLogMessageStorage } from '../dist/functions/database.js'
 import { formatStatusMessage } from '../dist/commands/status.js'
+import pingCommand from '../dist/commands/ping.js'
+import ifmaCommand from '../dist/commands/ifma.js'
+import oiCommand from '../dist/commands/oi.js'
+import {
+  createReconnectScheduler,
+  getDisconnectStatusCode,
+  getReconnectDecision
+} from '../dist/services/connectionPolicyService.js'
+import { processCommand } from '../dist/handlers/commandHandler.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -60,6 +69,224 @@ function createFakeSocket() {
     }
   }
 }
+
+function createCommandDependencies(overrides = {}) {
+  const events = []
+  return {
+    events,
+    dependencies: {
+      commandRegistry: new Map(),
+      ensureCommandsReady: async () => {},
+      sendEnd: async (...args) => events.push({ type: 'end', args }),
+      sendStart: async (...args) => events.push({ type: 'start', args }),
+      authorizeAdmin: async () => ({
+        authorized: true,
+        source: 'message',
+        lidMappingAttempted: false,
+        databaseLookupAttempted: false
+      }),
+      getAdminDenial: () => ({
+        adminsConfigured: true,
+        code: BotResultCode.FORBIDDEN,
+        message: 'negado 403'
+      }),
+      writeTechnicalLog: (...args) => events.push({ type: 'technical-log', args }),
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
+      resolveJidDomain: () => 's.whatsapp.net',
+      ...overrides
+    }
+  }
+}
+
+runTest('decide reconexão apenas quando a sessão não foi encerrada', () => {
+  const loggedOutError = { output: { statusCode: 401 } }
+  const transientError = { output: { statusCode: 408 } }
+
+  assert.equal(getDisconnectStatusCode(loggedOutError), 401)
+  assert.equal(getDisconnectStatusCode({ output: { statusCode: '401' } }), undefined)
+  assert.deepEqual(getReconnectDecision(loggedOutError, 401), {
+    reason: 401,
+    shouldReconnect: false,
+    runtimeStatus: 'logged_out'
+  })
+  assert.deepEqual(getReconnectDecision(transientError, 401), {
+    reason: 408,
+    shouldReconnect: true,
+    runtimeStatus: 'disconnected'
+  })
+  assert.deepEqual(getReconnectDecision(undefined, 401), {
+    reason: undefined,
+    shouldReconnect: true,
+    runtimeStatus: 'disconnected'
+  })
+})
+
+runTest('agendador mantém timer único e permite cancelar reconexão pendente', () => {
+  const scheduled = []
+  const cleared = []
+  const scheduler = createReconnectScheduler({
+    delayMs: 5_000,
+    reconnect: async () => {},
+    onReconnectError: () => {},
+    setTimer: (callback, delayMs) => {
+      const handle = { callback, delayMs }
+      scheduled.push(handle)
+      return handle
+    },
+    clearTimer: handle => cleared.push(handle)
+  })
+
+  scheduler.schedule()
+  scheduler.schedule()
+  assert.equal(scheduled.length, 1)
+  assert.equal(scheduler.hasPending(), true)
+
+  scheduler.cancel()
+  assert.deepEqual(cleared, [scheduled[0]])
+  assert.equal(scheduler.hasPending(), false)
+})
+
+await runAsyncTest('comandos ping, ifma e oi enviam respostas ao remetente', async () => {
+  const ping = createFakeSocket()
+  const ifma = createFakeSocket()
+  const oi = createFakeSocket()
+  const msg = { key: { remoteJid: 'user@s.whatsapp.net' } }
+
+  await pingCommand.execute(ping.sock, msg)
+  await ifmaCommand.execute(ifma.sock, msg)
+  await oiCommand.execute(oi.sock, msg)
+
+  assert.deepEqual(ping.messages, [{
+    jid: 'user@s.whatsapp.net',
+    content: { text: 'O Firabot está ativo!' }
+  }])
+  assert.equal(ifma.messages.length, 1)
+  assert.equal(ifma.messages[0].jid, 'user@s.whatsapp.net')
+  assert.match(ifma.messages[0].content.text, /INFORMAÇÕES IFMA/)
+  assert.match(ifma.messages[0].content.text, /Calendário Acadêmico/)
+  assert.equal(oi.messages[0].jid, 'user@s.whatsapp.net')
+  assert.match(oi.messages[0].content.text, /ASSISTENTE IFMA/)
+})
+
+await runAsyncTest('dispatcher encaminha encerramento e aliases de início sem consultar comandos', async () => {
+  const { sock } = createFakeSocket()
+  let commandLookups = 0
+  const fixture = createCommandDependencies({
+    ensureCommandsReady: async () => { commandLookups += 1 }
+  })
+  const msg = { key: { remoteJid: 'user@s.whatsapp.net' } }
+
+  await processCommand(sock, msg, '!encerrar', 'user@s.whatsapp.net', 'Aluno', 'docs', fixture.dependencies)
+  await processCommand(sock, msg, '!menu', 'user@s.whatsapp.net', 'Aluno', 'main', fixture.dependencies)
+
+  assert.deepEqual(fixture.events.map(event => event.type), ['end', 'start'])
+  assert.equal(fixture.events[1].args[3], 'Início: !menu')
+  assert.equal(commandLookups, 0)
+})
+
+await runAsyncTest('dispatcher executa comando público com argumentos e registra sucesso', async () => {
+  const { sock } = createFakeSocket()
+  const receivedArgs = []
+  const fixture = createCommandDependencies({
+    commandRegistry: new Map([['eco', {
+      name: 'eco',
+      description: 'Eco de teste',
+      execute: async (_sock, _msg, args) => receivedArgs.push(...args)
+    }]])
+  })
+
+  await processCommand(
+    sock,
+    { key: { remoteJid: 'user@s.whatsapp.net' } },
+    '!eco um dois',
+    'user@s.whatsapp.net',
+    'Aluno',
+    'main',
+    fixture.dependencies
+  )
+
+  assert.deepEqual(receivedArgs, ['um', 'dois'])
+  assert.equal(fixture.events.at(-1).type, 'user-log')
+})
+
+await runAsyncTest('dispatcher bloqueia comando administrativo com 403 ou 503', async () => {
+  for (const denial of [
+    { adminsConfigured: true, code: BotResultCode.FORBIDDEN, message: 'negado 403' },
+    { adminsConfigured: false, code: BotResultCode.SERVICE_UNAVAILABLE, message: 'indisponível 503' }
+  ]) {
+    const { sock, messages } = createFakeSocket()
+    let executions = 0
+    const fixture = createCommandDependencies({
+      commandRegistry: new Map([['restrito', {
+        name: 'restrito',
+        description: 'Restrito de teste',
+        adminOnly: true,
+        execute: async () => { executions += 1 }
+      }]]),
+      authorizeAdmin: async () => ({
+        authorized: false,
+        source: 'none',
+        lidMappingAttempted: true,
+        databaseLookupAttempted: true
+      }),
+      getAdminDenial: () => denial
+    })
+
+    await processCommand(
+      sock,
+      { key: { remoteJid: 'user@lid' } },
+      '!restrito',
+      'user@lid',
+      'Aluno',
+      'main',
+      fixture.dependencies
+    )
+
+    assert.equal(executions, 0)
+    assert.equal(messages[0].content.text, denial.message)
+    assert.equal(fixture.events.some(event => event.type === 'technical-log'), true)
+    assert.equal(fixture.events.some(event => event.type === 'user-log'), true)
+  }
+})
+
+await runAsyncTest('dispatcher autoriza comando administrativo e rejeita comando desconhecido', async () => {
+  const authorized = createCommandDependencies({
+    commandRegistry: new Map([['restrito', {
+      name: 'restrito',
+      description: 'Restrito de teste',
+      adminOnly: true,
+      execute: async () => authorized.events.push({ type: 'execute' })
+    }]])
+  })
+  const authorizedSocket = createFakeSocket()
+
+  await processCommand(
+    authorizedSocket.sock,
+    { key: { remoteJid: 'admin@s.whatsapp.net' } },
+    '!restrito',
+    'admin@s.whatsapp.net',
+    'Admin',
+    'main',
+    authorized.dependencies
+  )
+
+  assert.deepEqual(authorized.events.map(event => event.type), ['execute', 'technical-log', 'user-log'])
+
+  const unknown = createCommandDependencies()
+  const unknownSocket = createFakeSocket()
+  await processCommand(
+    unknownSocket.sock,
+    { key: { remoteJid: 'user@s.whatsapp.net' } },
+    '!',
+    'user@s.whatsapp.net',
+    'Aluno',
+    'main',
+    unknown.dependencies
+  )
+
+  assert.match(unknownSocket.messages[0].content.text, /404/)
+  assert.equal(unknown.events.at(-1).type, 'user-log')
+})
 
 await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
   const processed = []

@@ -210,6 +210,8 @@ linhas e statements, 40% de funções e 60% de branches. A pasta `coverage/` é
 gerada automaticamente e não deve ser versionada. O comando limpa e recompila
 `dist/` com source maps exclusivos para a medição, impedindo que artefatos antigos
 distorçam o resultado sem incluir esses mapas no build normal de produção.
+Na fatia P2-QA-03, a medição equivalente à CI subiu para 53,74% de
+linhas/statements, 48,70% de funções e 73,35% de branches.
 
 ## Estratégia de Logs
 
@@ -282,7 +284,7 @@ Links importantes e editais são carregados preferencialmente das tabelas `impor
 
 ## Testes e Qualidade
 
-O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, autorização administrativa, saída indisponível do status, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável. `npm run test:coverage` executa a mesma suíte com medição pelo V8/c8 e falha se os limiares de qualidade regredirem.
+O comando `npm test` executa `npm run build` e depois `npm run test:no-build`, que roda testes com `node:assert` sobre serviços, menus, estados, processamento completo de lotes, deduplicação, autorização administrativa, dispatcher de comandos, política de reconexão, saída indisponível do status, sanitização recursiva de logs, proteção de paths de documentos e socket fake. O comando `npm run test:no-build` reaproveita o `dist/` existente e não recompila, então use-o apenas depois de gerar um build confiável. `npm run test:coverage` executa a mesma suíte com medição pelo V8/c8 e falha se os limiares de qualidade regredirem.
 
 Com o MySQL Docker ativo e após um build confiável, o teste integrado pode ser
 executado no PowerShell com:

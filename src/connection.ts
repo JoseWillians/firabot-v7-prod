@@ -4,36 +4,23 @@ import { messageHandler } from './middlewares/messageHandler.js'
 import { config } from './config.js'
 import { botLog, errorLog } from './services/logService.js'
 import { setWhatsAppStatus } from './services/runtimeStatusService.js'
+import { createReconnectScheduler, getReconnectDecision } from './services/connectionPolicyService.js'
 
 let activeSocket: WASocket | null = null
 let isStarting = false
-let reconnectTimer: NodeJS.Timeout | null = null
 
 /**
  * Agenda reconexão fora do callback de fechamento.
  * O timer único evita várias tentativas simultâneas quando o Baileys emite
  * eventos próximos entre si ou quando startBot é chamado manualmente.
  */
-const scheduleReconnect = () => {
-  if (reconnectTimer) return
-
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null
-    startBot().catch(err => {
-      errorLog('BOT_RECONNECTING', 'Erro ao tentar reconectar', err)
-      scheduleReconnect()
-    })
-  }, config.reconnectDelayMs)
-}
-
-const getDisconnectStatusCode = (error: unknown) => {
-  if (error && typeof error === 'object' && 'output' in error) {
-    const output = (error as { output?: { statusCode?: number } }).output
-    return output?.statusCode
+const reconnectScheduler = createReconnectScheduler({
+  delayMs: config.reconnectDelayMs,
+  reconnect: () => startBot(),
+  onReconnectError: err => {
+    errorLog('BOT_RECONNECTING', 'Erro ao tentar reconectar', err)
   }
-
-  return undefined
-}
+})
 
 export const startBot = async () => {
   /**
@@ -81,26 +68,29 @@ export const startBot = async () => {
       }
 
       if (connection === 'open') {
+        reconnectScheduler.cancel()
         setWhatsAppStatus('connected')
         botLog('BOT_CONNECTED', `${config.botName} está online e pronto.`)
       }
 
       if (connection === 'close') {
-        const reason = getDisconnectStatusCode(lastDisconnect?.error)
+        const reconnect = getReconnectDecision(lastDisconnect?.error, DisconnectReason.loggedOut)
         activeSocket = null
-        setWhatsAppStatus('disconnected')
+        setWhatsAppStatus(reconnect.runtimeStatus)
 
-        if (reason === DisconnectReason.loggedOut) {
-          setWhatsAppStatus('logged_out')
-          botLog('BOT_LOGGED_OUT', 'Sessão encerrada no WhatsApp. Leia um novo QR Code para reconectar.', { reason })
+        if (!reconnect.shouldReconnect) {
+          reconnectScheduler.cancel()
+          botLog('BOT_LOGGED_OUT', 'Sessão encerrada no WhatsApp. Leia um novo QR Code para reconectar.', {
+            reason: reconnect.reason
+          })
           return
         }
 
         botLog('BOT_RECONNECTING', 'WhatsApp desconectado. Reagendando reconexão.', {
-          reason,
+          reason: reconnect.reason,
           reconnectDelayMs: config.reconnectDelayMs
         })
-        scheduleReconnect()
+        reconnectScheduler.schedule()
       }
     })
 
