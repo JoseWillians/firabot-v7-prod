@@ -7,53 +7,89 @@ import { formatMenu } from '../services/menuService.js'
 import { updateUserState } from '../services/userStateService.js'
 import { sendDocumentWithTracking } from './documentSendFlow.js'
 
-export async function processDocsCategoryOption(sock: WASocket, userJid: string, userName: string, option: string, currentState: UserState) {
+export interface DocumentsFlowDependencies {
+  formatDocuments: typeof formatDocumentsMenu
+  listDocuments: typeof getAvailableDocuments
+  findDocument: typeof findDocumentByOption
+  setState: typeof updateUserState
+  writeUserLog: typeof registerUserLog
+  sendTracked: typeof sendDocumentWithTracking
+}
+
+const defaultDependencies: DocumentsFlowDependencies = {
+  formatDocuments: formatDocumentsMenu,
+  listDocuments: getAvailableDocuments,
+  findDocument: findDocumentByOption,
+  setState: updateUserState,
+  writeUserLog: registerUserLog,
+  sendTracked: sendDocumentWithTracking
+}
+
+export async function processDocsCategoryOption(
+  sock: WASocket,
+  userJid: string,
+  userName: string,
+  option: string,
+  currentState: UserState,
+  dependencyOverrides: Partial<DocumentsFlowDependencies> = {}
+) {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   /**
    * O menu Documentos separa setores antes de listar arquivos.
    * Isso prepara DRCA e CAE para crescerem de forma independente sem misturar
    * documentos acadêmicos de áreas diferentes.
    */
   if (option === '1') {
-    await sock.sendMessage(userJid, { text: await formatDocumentsMenu() })
-    const stateAfter = await updateUserState(userJid, 'docs_drca')
-    await registerUserLog(userJid, userName, 'Documentos: DRCA', currentState, 'MENU_OPENED', { stateBefore: currentState, stateAfter, menu: 'documentos drca', success: true })
+    await sock.sendMessage(userJid, { text: await dependencies.formatDocuments() })
+    const stateAfter = await dependencies.setState(userJid, 'docs_drca')
+    await dependencies.writeUserLog(userJid, userName, 'Documentos: DRCA', currentState, 'MENU_OPENED', { stateBefore: currentState, stateAfter, menu: 'documentos drca', success: true })
     return
   }
 
   if (option === '2') {
-    const caeDocuments = await getAvailableDocuments('cae')
+    const caeDocuments = await dependencies.listDocuments('cae')
     await sock.sendMessage(userJid, {
       text: caeDocuments.length
-        ? await formatDocumentsMenu('cae', '📄 *DOCUMENTOS CAE*')
+        ? await dependencies.formatDocuments('cae', '📄 *DOCUMENTOS CAE*')
         : formatMenu(emptyCaeDocsMenu)
     })
-    const stateAfter = await updateUserState(userJid, 'docs_cae')
-    await registerUserLog(userJid, userName, 'Documentos: CAE', currentState, 'MENU_OPENED', { stateBefore: currentState, stateAfter, menu: 'documentos cae', success: true })
+    const stateAfter = await dependencies.setState(userJid, 'docs_cae')
+    await dependencies.writeUserLog(userJid, userName, 'Documentos: CAE', currentState, 'MENU_OPENED', { stateBefore: currentState, stateAfter, menu: 'documentos cae', success: true })
     return
   }
 
   await sock.sendMessage(userJid, {
     text: `Não consegui entender essa opção no menu de documentos. Escolha uma opção válida:\n\n${formatMenu(docsCategoryMenu)}`
   })
-  await registerUserLog(userJid, userName, `Opção inválida em documentos: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos', success: false })
+  await dependencies.writeUserLog(userJid, userName, `Opção inválida em documentos: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos', success: false })
 }
 
-export async function processDrcaDocsOption(sock: WASocket, userJid: string, userName: string, option: string, currentState: UserState) {
+export async function processDrcaDocsOption(
+  sock: WASocket,
+  userJid: string,
+  userName: string,
+  option: string,
+  currentState: UserState,
+  dependencyOverrides: Partial<DocumentsFlowDependencies> = {}
+) {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   /**
    * Documentos são resolvidos por opção dinâmica; o banco define a lista ativa.
    * Isso permite adicionar/remover PDFs sem alterar o fluxo principal.
    */
-  const document = await findDocumentByOption(option)
+  const document = await dependencies.findDocument(option)
 
   if (!document) {
     await sock.sendMessage(userJid, {
-      text: `Não consegui entender essa opção no menu de documentos. Escolha uma opção válida:\n\n${await formatDocumentsMenu()}`
+      text: `Não consegui entender essa opção no menu de documentos. Escolha uma opção válida:\n\n${await dependencies.formatDocuments()}`
     })
-    await registerUserLog(userJid, userName, `Opção inválida em documentos: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos', success: false })
+    await dependencies.writeUserLog(userJid, userName, `Opção inválida em documentos: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos', success: false })
     return
   }
 
-  await sendDocumentWithTracking(
+  await dependencies.sendTracked(
     sock,
     userJid,
     userName,
@@ -63,30 +99,39 @@ export async function processDrcaDocsOption(sock: WASocket, userJid: string, use
     'documentos',
     `Documento solicitado: ${document.label}`,
     `Documento enviado: ${document.label}`,
-    await getAvailableDocuments('drca')
+    await dependencies.listDocuments('drca')
   )
 }
 
-export async function processCaeDocsOption(sock: WASocket, userJid: string, userName: string, option: string, currentState: UserState) {
+export async function processCaeDocsOption(
+  sock: WASocket,
+  userJid: string,
+  userName: string,
+  option: string,
+  currentState: UserState,
+  dependencyOverrides: Partial<DocumentsFlowDependencies> = {}
+) {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   /**
    * A CAE usa a mesma resolução dinâmica da DRCA.
    * Se o painel cadastrar um PDF ativo com category_code = "cae", ele passa a
    * aparecer no menu e pode ser enviado pelo bot sem reinserir opções no código.
    */
-  const documents = await getAvailableDocuments('cae')
-  const document = await findDocumentByOption(option, 'cae')
+  const documents = await dependencies.listDocuments('cae')
+  const document = await dependencies.findDocument(option, 'cae')
 
   if (!document) {
     await sock.sendMessage(userJid, {
       text: documents.length
-        ? `Não consegui entender essa opção no menu de documentos CAE. Escolha uma opção válida:\n\n${await formatDocumentsMenu('cae', '📄 *DOCUMENTOS CAE*')}`
+        ? `Não consegui entender essa opção no menu de documentos CAE. Escolha uma opção válida:\n\n${await dependencies.formatDocuments('cae', '📄 *DOCUMENTOS CAE*')}`
         : `Ainda não há documentos da CAE cadastrados para envio automático.\n\n${formatMenu(emptyCaeDocsMenu)}`
     })
-    await registerUserLog(userJid, userName, `Opção inválida em documentos CAE: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos cae', success: false })
+    await dependencies.writeUserLog(userJid, userName, `Opção inválida em documentos CAE: ${option}`, currentState, 'INVALID_OPTION', { menu: 'documentos cae', success: false })
     return
   }
 
-  await sendDocumentWithTracking(
+  await dependencies.sendTracked(
     sock,
     userJid,
     userName,

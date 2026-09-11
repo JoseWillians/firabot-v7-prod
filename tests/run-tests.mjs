@@ -46,6 +46,13 @@ import {
 import { processCommand } from '../dist/handlers/commandHandler.js'
 import { processMenuOption } from '../dist/handlers/menuOptionHandler.js'
 import { messageHandler } from '../dist/middlewares/messageHandler.js'
+import { processMainOption } from '../dist/flows/mainMenuFlow.js'
+import {
+  processCaeDocsOption,
+  processDocsCategoryOption,
+  processDrcaDocsOption
+} from '../dist/flows/documentsFlow.js'
+import { processCourseSelectionOption, processPpcDocumentOption } from '../dist/flows/courseFlow.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -167,6 +174,89 @@ function createMenuDependencies(overrides = {}) {
       handleCourseSelection: record('course'),
       handlePpcDocument: record('ppc'),
       handleMainOption: record('main-option'),
+      ...overrides
+    }
+  }
+}
+
+function createMainFlowDependencies(overrides = {}) {
+  const events = []
+  return {
+    events,
+    dependencies: {
+      formatLinks: async () => 'LINKS DINÂMICOS',
+      formatNotices: async () => 'EDITAIS DINÂMICOS',
+      sendFollowUp: async (...args) => events.push({ type: 'follow-up', args }),
+      setState: async (_jid, state) => {
+        events.push({ type: 'set-state', state })
+        return state
+      },
+      openSupport: async (...args) => events.push({ type: 'support', args }),
+      writeBotLog: (...args) => events.push({ type: 'bot-log', args }),
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
+      ...overrides
+    }
+  }
+}
+
+function createDocumentsFlowDependencies(overrides = {}) {
+  const events = []
+  const drcaDocument = {
+    key: '1',
+    label: 'Documento DRCA de teste',
+    path: './documentos/drca/teste.pdf',
+    summary: 'Resumo DRCA de teste'
+  }
+  const caeDocument = {
+    key: '1',
+    label: 'Documento CAE de teste',
+    path: './documentos/cae/teste.pdf',
+    summary: 'Resumo CAE de teste'
+  }
+
+  return {
+    events,
+    drcaDocument,
+    caeDocument,
+    dependencies: {
+      formatDocuments: async category => category === 'cae' ? 'MENU CAE DINÂMICO' : 'MENU DRCA DINÂMICO',
+      listDocuments: async category => category === 'cae' ? [caeDocument] : [drcaDocument],
+      findDocument: async (option, category = 'drca') => {
+        const document = category === 'cae' ? caeDocument : drcaDocument
+        return option === document.key ? document : undefined
+      },
+      setState: async (_jid, state) => {
+        events.push({ type: 'set-state', state })
+        return state
+      },
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
+      sendTracked: async (...args) => events.push({ type: 'send-tracked', args }),
+      ...overrides
+    }
+  }
+}
+
+function createCourseFlowDependencies(overrides = {}) {
+  const events = []
+  const ppcDocument = {
+    key: '1',
+    label: 'PPC de teste',
+    path: './documentos/ppc/teste.pdf',
+    summary: 'Resumo PPC de teste'
+  }
+
+  return {
+    events,
+    ppcDocument,
+    dependencies: {
+      setState: async (_jid, state) => {
+        events.push({ type: 'set-state', state })
+        return state
+      },
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
+      findPpc: async (_state, option) => option === ppcDocument.key ? ppcDocument : undefined,
+      listPpcs: async () => [ppcDocument],
+      sendTracked: async (...args) => events.push({ type: 'send-tracked', args }),
       ...overrides
     }
   }
@@ -521,6 +611,229 @@ await runAsyncTest('menu option handler cobre retorno, estado informativo e toda
     await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '1', route.state, fixture.dependencies)
     assert.deepEqual(fixture.events.map(event => event.type), [route.expected])
   }
+})
+
+await runAsyncTest('fluxo principal permite isolar suporte e estado sem acessar socket real', async () => {
+  const fixture = createMainFlowDependencies()
+  const forbiddenSocket = {
+    async sendMessage() {
+      throw new Error('o socket não deveria ser usado diretamente nesta rota')
+    }
+  }
+
+  await processMainOption(
+    forbiddenSocket,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '7',
+    'main',
+    fixture.dependencies
+  )
+
+  assert.deepEqual(fixture.events.map(event => event.type), ['support', 'set-state'])
+  assert.equal(fixture.events[1].state, 'suporte')
+})
+
+await runAsyncTest('fluxo principal cobre opções 1 a 7 com menus e transições esperadas', async () => {
+  const scenarios = [
+    { option: '1', state: 'biblioteca', text: /Biblioteca/, events: ['follow-up', 'set-state', 'user-log'] },
+    { option: '2', state: 'docs', text: /DOCUMENTOS/, events: ['set-state', 'bot-log', 'user-log'] },
+    { option: '3', state: 'curso', text: /PPC DO CURSO/, events: ['set-state', 'bot-log', 'user-log'] },
+    { option: '4', state: 'links', text: /LINKS DINÂMICOS/, events: ['follow-up', 'set-state', 'user-log'] },
+    { option: '5', state: 'editais', text: /EDITAIS DINÂMICOS/, events: ['follow-up', 'set-state', 'user-log'] },
+    { option: '6', state: 'ru', text: /RU/, events: ['follow-up', 'set-state', 'user-log'] },
+    { option: '7', state: 'suporte', events: ['support', 'set-state'] }
+  ]
+
+  for (const scenario of scenarios) {
+    const fixture = createMainFlowDependencies()
+    const { sock, messages } = createFakeSocket()
+
+    await processMainOption(sock, 'user@s.whatsapp.net', 'Aluno', scenario.option, 'main', fixture.dependencies)
+
+    assert.deepEqual(fixture.events.map(event => event.type), scenario.events)
+    assert.equal(fixture.events.find(event => event.type === 'set-state').state, scenario.state)
+    if (scenario.text) assert.match(messages[0].content.text, scenario.text)
+
+    const followUp = fixture.events.find(event => event.type === 'follow-up')
+    if (['4', '5'].includes(scenario.option)) assert.equal(followUp.args[2], 0)
+  }
+})
+
+await runAsyncTest('fluxo principal rejeita opção inválida e não altera estado', async () => {
+  const fixture = createMainFlowDependencies()
+  const { sock, messages } = createFakeSocket()
+
+  await processMainOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'main', fixture.dependencies)
+
+  assert.match(messages[0].content.text, /1 - Biblioteca/)
+  assert.deepEqual(fixture.events.map(event => event.type), ['user-log'])
+  assert.equal(fixture.events[0].args[4], 'INVALID_OPTION')
+})
+
+await runAsyncTest('fluxo principal propaga falha de conteúdo sem registrar sucesso ou estado', async () => {
+  const fixture = createMainFlowDependencies({
+    formatLinks: async () => { throw new Error('falha controlada de links') }
+  })
+
+  await assert.rejects(
+    processMainOption(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '4', 'main', fixture.dependencies),
+    /falha controlada de links/
+  )
+  assert.deepEqual(fixture.events, [])
+})
+
+await runAsyncTest('fluxo de categorias abre DRCA, CAE disponível e CAE vazio', async () => {
+  const scenarios = [
+    { option: '1', expectedState: 'docs_drca', expectedText: /MENU DRCA DINÂMICO/ },
+    { option: '2', expectedState: 'docs_cae', expectedText: /MENU CAE DINÂMICO/ },
+    { option: '2', expectedState: 'docs_cae', emptyCae: true, expectedText: /Ainda não há documentos da CAE/ }
+  ]
+
+  for (const scenario of scenarios) {
+    const fixture = createDocumentsFlowDependencies(scenario.emptyCae ? {
+      listDocuments: async () => []
+    } : {})
+    const { sock, messages } = createFakeSocket()
+
+    await processDocsCategoryOption(sock, 'user@s.whatsapp.net', 'Aluno', scenario.option, 'docs', fixture.dependencies)
+
+    assert.match(messages[0].content.text, scenario.expectedText)
+    assert.deepEqual(fixture.events.map(event => event.type), ['set-state', 'user-log'])
+    assert.equal(fixture.events[0].state, scenario.expectedState)
+  }
+})
+
+await runAsyncTest('fluxo de categorias rejeita opção inválida com menu real', async () => {
+  const fixture = createDocumentsFlowDependencies()
+  const { sock, messages } = createFakeSocket()
+
+  await processDocsCategoryOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs', fixture.dependencies)
+
+  assert.match(messages[0].content.text, /1 - Documentos DRCA/)
+  assert.deepEqual(fixture.events.map(event => event.type), ['user-log'])
+  assert.equal(fixture.events[0].args[4], 'INVALID_OPTION')
+})
+
+await runAsyncTest('fluxos DRCA e CAE encaminham documento válido com opções irmãs', async () => {
+  for (const route of [
+    { process: processDrcaDocsOption, state: 'docs_drca', menu: 'documentos', documentType: 'drca' },
+    { process: processCaeDocsOption, state: 'docs_cae', menu: 'documentos cae', documentType: 'cae' }
+  ]) {
+    const fixture = createDocumentsFlowDependencies()
+
+    await route.process(
+      createFakeSocket().sock,
+      'user@s.whatsapp.net',
+      'Aluno',
+      '1',
+      route.state,
+      fixture.dependencies
+    )
+
+    assert.deepEqual(fixture.events.map(event => event.type), ['send-tracked'])
+    const args = fixture.events[0].args
+    assert.equal(args[6], route.menu)
+    assert.equal(args[9][0].label, route.documentType === 'cae' ? fixture.caeDocument.label : fixture.drcaDocument.label)
+  }
+})
+
+await runAsyncTest('fluxos DRCA e CAE orientam opção ausente com lista ou fallback vazio', async () => {
+  const drca = createDocumentsFlowDependencies()
+  const drcaSocket = createFakeSocket()
+  await processDrcaDocsOption(drcaSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_drca', drca.dependencies)
+  assert.match(drcaSocket.messages[0].content.text, /MENU DRCA DINÂMICO/)
+  assert.deepEqual(drca.events.map(event => event.type), ['user-log'])
+
+  const cae = createDocumentsFlowDependencies()
+  const caeSocket = createFakeSocket()
+  await processCaeDocsOption(caeSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_cae', cae.dependencies)
+  assert.match(caeSocket.messages[0].content.text, /MENU CAE DINÂMICO/)
+  assert.deepEqual(cae.events.map(event => event.type), ['user-log'])
+
+  const emptyCae = createDocumentsFlowDependencies({ listDocuments: async () => [] })
+  const emptyCaeSocket = createFakeSocket()
+  await processCaeDocsOption(emptyCaeSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_cae', emptyCae.dependencies)
+  assert.match(emptyCaeSocket.messages[0].content.text, /Ainda não há documentos da CAE/)
+  assert.deepEqual(emptyCae.events.map(event => event.type), ['user-log'])
+})
+
+await runAsyncTest('fluxo documental propaga falha de consulta sem registrar sucesso', async () => {
+  const fixture = createDocumentsFlowDependencies({
+    findDocument: async () => { throw new Error('falha controlada de documentos') }
+  })
+
+  await assert.rejects(
+    processDrcaDocsOption(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '1', 'docs_drca', fixture.dependencies),
+    /falha controlada de documentos/
+  )
+  assert.deepEqual(fixture.events, [])
+})
+
+await runAsyncTest('seleção de curso cobre os cinco cursos e opção inválida', async () => {
+  const expectedStates = [
+    'curso_eng_comp',
+    'curso_bach_adm',
+    'curso_lic_fis',
+    'curso_grad_tce',
+    'curso_eng_civil'
+  ]
+
+  for (const [index, expectedState] of expectedStates.entries()) {
+    const fixture = createCourseFlowDependencies()
+    const { sock, messages } = createFakeSocket()
+    await processCourseSelectionOption(sock, 'user@s.whatsapp.net', 'Aluno', String(index + 1), 'curso', fixture.dependencies)
+
+    assert.match(messages[0].content.text, /PPC/)
+    assert.deepEqual(fixture.events.map(event => event.type), ['set-state', 'user-log'])
+    assert.equal(fixture.events[0].state, expectedState)
+  }
+
+  const invalid = createCourseFlowDependencies()
+  const invalidSocket = createFakeSocket()
+  await processCourseSelectionOption(invalidSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'curso', invalid.dependencies)
+  assert.match(invalidSocket.messages[0].content.text, /1 - Engenharia de Computação/)
+  assert.deepEqual(invalid.events.map(event => event.type), ['user-log'])
+})
+
+await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ausente', async () => {
+  const valid = createCourseFlowDependencies()
+  await processPpcDocumentOption(
+    createFakeSocket().sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '1',
+    'curso_eng_comp',
+    valid.dependencies
+  )
+  assert.deepEqual(valid.events.map(event => event.type), ['send-tracked'])
+  assert.equal(valid.events[0].args[6], 'curso')
+  assert.deepEqual(valid.events[0].args[9], [valid.ppcDocument])
+
+  const invalid = createCourseFlowDependencies()
+  const invalidSocket = createFakeSocket()
+  await processPpcDocumentOption(
+    invalidSocket.sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '9',
+    'curso_eng_civil',
+    invalid.dependencies
+  )
+  assert.match(invalidSocket.messages[0].content.text, /PPC - Engenharia Civil/)
+  assert.deepEqual(invalid.events.map(event => event.type), ['user-log'])
+})
+
+await runAsyncTest('fluxo PPC propaga falha de busca sem envio ou log falso', async () => {
+  const fixture = createCourseFlowDependencies({
+    findPpc: async () => { throw new Error('falha controlada de PPC') }
+  })
+
+  await assert.rejects(
+    processPpcDocumentOption(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '1', 'curso_eng_comp', fixture.dependencies),
+    /falha controlada de PPC/
+  )
+  assert.deepEqual(fixture.events, [])
 })
 
 await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
