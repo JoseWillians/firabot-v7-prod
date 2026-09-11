@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import {
   isGreetingOrStartMessage,
@@ -68,6 +70,11 @@ async function runAsyncTest(name, testFn) {
   console.log(`ok - ${name}`)
 }
 
+async function runOptionalAsyncTest(name, testFn) {
+  const result = await testFn()
+  console.log(`${result === 'skip' ? 'skip' : 'ok'} - ${name}`)
+}
+
 function createFakeSocket() {
   const messages = []
   return {
@@ -77,6 +84,55 @@ function createFakeSocket() {
         messages.push({ jid, content })
       }
     }
+  }
+}
+
+async function withTemporaryDocumentSandbox(testFn) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'firabot-document-service-'))
+  const documentsDir = path.join(root, 'documents')
+  const outsideDir = path.join(root, 'outside')
+  await Promise.all([
+    mkdir(documentsDir, { recursive: true }),
+    mkdir(outsideDir, { recursive: true })
+  ])
+
+  try {
+    return await testFn({ root, documentsDir, outsideDir })
+  } finally {
+    const relativeToTemp = path.relative(path.resolve(os.tmpdir()), path.resolve(root))
+    if (relativeToTemp.startsWith('..') || path.isAbsolute(relativeToTemp)) {
+      throw new Error(`Sandbox temporário fora do diretório permitido: ${root}`)
+    }
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+  }
+}
+
+async function withMutedConsole(testFn) {
+  const originalLog = console.log
+  const originalError = console.error
+  console.log = () => {}
+  console.error = () => {}
+
+  try {
+    return await testFn()
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+  }
+}
+
+async function withCapturedConsole(testFn) {
+  const originalLog = console.log
+  const originalError = console.error
+  const outputs = []
+  console.log = value => outputs.push(String(value))
+  console.error = value => outputs.push(String(value))
+
+  try {
+    return { result: await testFn(), output: outputs.join('\n') }
+  } finally {
+    console.log = originalLog
+    console.error = originalError
   }
 }
 
@@ -1379,6 +1435,182 @@ runTest('protege resolução de documentos contra path traversal', () => {
   assert.equal(resolveSafeDocumentPath('./documentos/drca/requerimento-academico.pdf').isInsideDocumentsDir, true)
   assert.equal(resolveSafeDocumentPath('../.env').isInsideDocumentsDir, false)
   assert.equal(resolveSafeDocumentPath(path.resolve('package.json')).isInsideDocumentsDir, false)
+})
+
+await runAsyncTest('envia PDF da base permitida com payload e metadados corretos', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const filePath = path.join(documentsDir, 'documento.pdf')
+    const fileContent = Buffer.from('%PDF-1.4\nfixture firabot')
+    await writeFile(filePath, fileContent)
+    const { sock, messages } = createFakeSocket()
+
+    const result = await sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-ok',
+      label: 'Documento Seguro',
+      path: './documentos/documento.pdf'
+    }, { documentsBasePath: documentsDir })
+
+    assert.equal(result.success, true)
+    assert.equal(result.code, BotResultCode.OK)
+    assert.equal(result.absolutePath, filePath)
+    assert.equal(messages.length, 1)
+    assert.deepEqual(messages[0].content.document, fileContent)
+    assert.equal(messages[0].content.mimetype, 'application/pdf')
+    assert.equal(messages[0].content.fileName, 'Documento Seguro.pdf')
+  })
+})
+
+await runAsyncTest('retorna 404 para arquivo ausente dentro da base permitida', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const { sock, messages } = createFakeSocket()
+    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-missing',
+      label: 'Documento ausente',
+      path: path.join(documentsDir, 'ausente.pdf')
+    }, { documentsBasePath: documentsDir }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.NOT_FOUND)
+    assert.equal(messages.length, 1)
+    assert.match(messages[0].content.text, /Código de referência: 404/)
+    assert.equal('document' in messages[0].content, false)
+  })
+})
+
+await runAsyncTest('retorna 413 sem enviar binário acima do limite configurado', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const filePath = path.join(documentsDir, 'grande.pdf')
+    await writeFile(filePath, Buffer.alloc(16, 1))
+    const { sock, messages } = createFakeSocket()
+    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-large',
+      label: 'Documento grande',
+      path: filePath
+    }, { documentsBasePath: documentsDir, maxSizeBytes: 8 }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.PAYLOAD_TOO_LARGE)
+    assert.equal(messages.length, 1)
+    assert.match(messages[0].content.text, /Código de referência: 413/)
+    assert.equal('document' in messages[0].content, false)
+  })
+})
+
+await runAsyncTest('normaliza falha do provider como 500 e orienta o usuário', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const filePath = path.join(documentsDir, 'provider.pdf')
+    await writeFile(filePath, Buffer.from('%PDF-1.4\nprovider'))
+    const messages = []
+    const sock = {
+      async sendMessage(jid, content) {
+        messages.push({ jid, content })
+        if (content.document) throw new Error('detalhe interno do provider')
+      }
+    }
+
+    const { result, output } = await withCapturedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-provider',
+      label: 'Documento provider',
+      path: filePath
+    }, { documentsBasePath: documentsDir }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
+    assert.equal(result.errorMessage, 'Erro ao enviar documento')
+    assert.equal(messages.filter(message => message.content.document).length, 1)
+    assert.equal(messages.filter(message => message.content.text).length, 1)
+    assert.match(messages.at(-1).content.text, /Código de referência: 500/)
+    assert.equal(output.includes(filePath), false)
+    assert.doesNotMatch(output, /detalhe interno do provider/)
+  })
+})
+
+await runAsyncTest('rejeita limite de tamanho inválido sem enviar binário', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const filePath = path.join(documentsDir, 'limite-invalido.pdf')
+    await writeFile(filePath, Buffer.from('%PDF-1.4\nlimite inválido'))
+    const { sock, messages } = createFakeSocket()
+    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-invalid-limit',
+      label: 'Documento com limite inválido',
+      path: filePath
+    }, { documentsBasePath: documentsDir, maxSizeBytes: Number.NaN }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
+    assert.equal(messages.length, 1)
+    assert.equal('document' in messages[0].content, false)
+  })
+})
+
+await runAsyncTest('mantém retorno 500 quando o provider também rejeita a orientação', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
+    const filePath = path.join(documentsDir, 'provider-duplo.pdf')
+    await writeFile(filePath, Buffer.from('%PDF-1.4\nprovider duplo'))
+    let attempts = 0
+    const sock = {
+      async sendMessage() {
+        attempts += 1
+        throw new Error('provider indisponível')
+      }
+    }
+
+    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-provider-double',
+      label: 'Documento provider duplo',
+      path: filePath
+    }, { documentsBasePath: documentsDir }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
+    assert.equal(attempts, 2)
+  })
+})
+
+await runAsyncTest('bloqueia arquivo real fora da base temporária', async () => {
+  await withTemporaryDocumentSandbox(async ({ documentsDir, outsideDir }) => {
+    const outsidePath = path.join(outsideDir, 'fora.pdf')
+    await writeFile(outsidePath, Buffer.from('%PDF-1.4\nfora'))
+    const { sock, messages } = createFakeSocket()
+    const { result, output } = await withCapturedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-outside',
+      label: 'Documento externo',
+      path: outsidePath
+    }, { documentsBasePath: documentsDir }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.FORBIDDEN)
+    assert.equal(messages.length, 1)
+    assert.equal('document' in messages[0].content, false)
+    assert.equal(output.includes(outsidePath), false)
+  })
+})
+
+await runOptionalAsyncTest('bloqueia link interno que aponta para fora da base', async () => {
+  return withTemporaryDocumentSandbox(async ({ documentsDir, outsideDir }) => {
+    const outsidePath = path.join(outsideDir, 'link-fora.pdf')
+    const linkedDir = path.join(documentsDir, 'link-externo')
+    await writeFile(outsidePath, Buffer.from('%PDF-1.4\nlink externo'))
+
+    try {
+      await symlink(outsideDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error?.code)) return 'skip'
+      throw error
+    }
+
+    const { sock, messages } = createFakeSocket()
+    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
+      key: 'doc-link',
+      label: 'Documento por link',
+      path: path.join(linkedDir, path.basename(outsidePath))
+    }, { documentsBasePath: documentsDir }))
+
+    assert.equal(result.success, false)
+    assert.equal(result.code, BotResultCode.FORBIDDEN)
+    assert.equal(messages.length, 1)
+    assert.equal('document' in messages[0].content, false)
+  })
 })
 
 await runAsyncTest('não envia documento com caminho fora de DOCUMENTS_DIR', async () => {

@@ -23,13 +23,19 @@ export interface DocumentSendResult {
   errorMessage?: string
 }
 
+export interface DocumentSendPolicy {
+  documentsBasePath?: string
+  maxSizeBytes?: number
+}
+
 async function sendDocumentFailureMessage(sock: WASocket, jid: string, text: string, code: BotResultCodeValue) {
   try {
     await sock.sendMessage(jid, { text: `${text}\n\nCódigo de referência: ${code}.` })
   } catch (error) {
-    errorLog('WHATSAPP_SEND_ERROR', 'Falha ao enviar orientação de erro de documento', error, {
+    errorLog('WHATSAPP_SEND_ERROR', 'Falha ao enviar orientação de erro de documento', new Error('Falha ao enviar orientação de documento'), {
       user: jid,
-      resultCode: BotResultCode.SERVICE_UNAVAILABLE
+      resultCode: BotResultCode.SERVICE_UNAVAILABLE,
+      errorType: error instanceof Error ? error.name : typeof error
     })
   }
 }
@@ -43,20 +49,22 @@ export interface DocumentsHealth {
   errorMessage?: string
 }
 
-function resolveDocumentPath(documentPath: string) {
-  const basePath = path.resolve(config.documentsBasePath)
-  const resolvedPath = path.isAbsolute(documentPath)
-    ? path.resolve(documentPath)
-    : documentPath.startsWith('./documentos') || documentPath.startsWith('documentos')
-      ? path.resolve(documentPath)
-      : path.resolve(basePath, documentPath)
+function resolveDocumentPath(documentPath: string, documentsBasePath = config.documentsBasePath) {
+  const basePath = path.resolve(documentsBasePath)
+  if (path.isAbsolute(documentPath)) return path.resolve(documentPath)
 
-  return resolvedPath
+  const normalizedPath = documentPath.replace(/\\/g, '/')
+  const documentsPrefix = /^(?:\.\/)?documentos(?:\/|$)/
+  const relativePath = documentsPrefix.test(normalizedPath)
+    ? normalizedPath.replace(documentsPrefix, '')
+    : documentPath
+
+  return path.resolve(basePath, relativePath)
 }
 
-export function resolveSafeDocumentPath(documentPath: string) {
-  const basePath = path.resolve(config.documentsBasePath)
-  const resolvedPath = resolveDocumentPath(documentPath)
+export function resolveSafeDocumentPath(documentPath: string, documentsBasePath = config.documentsBasePath) {
+  const basePath = path.resolve(documentsBasePath)
+  const resolvedPath = resolveDocumentPath(documentPath, documentsBasePath)
   const relativePath = path.relative(basePath, resolvedPath)
   const isInsideDocumentsDir = relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
 
@@ -188,8 +196,9 @@ export async function checkDocumentsHealth(): Promise<DocumentsHealth> {
   }
 }
 
-export async function sendDocument(sock: WASocket, jid: string, document: ActiveDocument): Promise<DocumentSendResult> {
-  const resolved = resolveSafeDocumentPath(document.path)
+export async function sendDocument(sock: WASocket, jid: string, document: ActiveDocument, policy: DocumentSendPolicy = {}): Promise<DocumentSendResult> {
+  const documentsBasePath = policy.documentsBasePath ?? config.documentsBasePath
+  const resolved = resolveSafeDocumentPath(document.path, documentsBasePath)
   const filePath = resolved.absolutePath
 
   try {
@@ -197,34 +206,37 @@ export async function sendDocument(sock: WASocket, jid: string, document: Active
      * Paths cadastrados no banco nunca podem escapar de DOCUMENTS_DIR.
      * Essa proteção é essencial antes do painel administrativo permitir upload
      * ou edição de documentos por administradores setoriais.
-     */
+      */
     if (!resolved.isInsideDocumentsDir) {
       await sendDocumentFailureMessage(sock, jid, 'Encontrei essa opção, mas o caminho do arquivo está inválido. Entre em contato com o suporte.', BotResultCode.FORBIDDEN)
-      errorLog('DOCUMENT_ERROR', 'Caminho de documento fora da pasta permitida', new Error('Caminho fora de DOCUMENTS_DIR'), { user: jid, documentId: document.key, document, resultCode: BotResultCode.FORBIDDEN })
-      debugLog('Caminho absoluto de documento bloqueado', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key, absolutePath: filePath })
+      errorLog('DOCUMENT_ERROR', 'Caminho de documento fora da pasta permitida', new Error('Caminho fora de DOCUMENTS_DIR'), { user: jid, documentId: document.key, resultCode: BotResultCode.FORBIDDEN })
+      debugLog('Caminho de documento bloqueado', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key })
       return { success: false, code: BotResultCode.FORBIDDEN, absolutePath: filePath, errorMessage: 'Caminho de documento fora da pasta permitida' }
     }
 
     if (!fs.existsSync(filePath)) {
       await sendDocumentFailureMessage(sock, jid, 'Encontrei essa opção, mas o arquivo não está disponível no servidor agora. Tente novamente mais tarde ou entre em contato com o suporte.', BotResultCode.NOT_FOUND)
-      errorLog('DOCUMENT_ERROR', 'Documento não encontrado no servidor', new Error('Arquivo não encontrado no servidor'), { user: jid, documentId: document.key, document, resultCode: BotResultCode.NOT_FOUND })
-      debugLog('Caminho absoluto de documento ausente', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key, absolutePath: filePath })
+      errorLog('DOCUMENT_ERROR', 'Documento não encontrado no servidor', new Error('Arquivo não encontrado no servidor'), { user: jid, documentId: document.key, resultCode: BotResultCode.NOT_FOUND })
+      debugLog('Documento ausente no servidor', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key })
       return { success: false, code: BotResultCode.NOT_FOUND, absolutePath: filePath, errorMessage: 'Arquivo não encontrado no servidor' }
     }
 
-    const baseRealPath = await fsPromises.realpath(path.resolve(config.documentsBasePath))
+    const baseRealPath = await fsPromises.realpath(path.resolve(documentsBasePath))
     const fileRealPath = await fsPromises.realpath(filePath)
     const realRelativePath = path.relative(baseRealPath, fileRealPath)
     const isRealPathInsideDocumentsDir = realRelativePath === '' || (!realRelativePath.startsWith('..') && !path.isAbsolute(realRelativePath))
     if (!isRealPathInsideDocumentsDir) {
       await sendDocumentFailureMessage(sock, jid, 'Encontrei essa opção, mas o arquivo aponta para um local não permitido. Entre em contato com o suporte.', BotResultCode.FORBIDDEN)
-      errorLog('DOCUMENT_ERROR', 'Documento usa link simbólico ou caminho real fora da pasta permitida', new Error('Caminho real fora de DOCUMENTS_DIR'), { user: jid, documentId: document.key, document, resultCode: BotResultCode.FORBIDDEN })
-      debugLog('Caminho real absoluto de documento bloqueado', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key, absolutePath: fileRealPath })
+      errorLog('DOCUMENT_ERROR', 'Documento usa link simbólico ou caminho real fora da pasta permitida', new Error('Caminho real fora de DOCUMENTS_DIR'), { user: jid, documentId: document.key, resultCode: BotResultCode.FORBIDDEN })
+      debugLog('Caminho real de documento bloqueado', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key })
       return { success: false, code: BotResultCode.FORBIDDEN, absolutePath: filePath, errorMessage: 'Caminho real fora da pasta permitida' }
     }
 
     const stats = await fsPromises.stat(filePath)
-    const maxSizeBytes = config.documentMaxSizeMb * 1024 * 1024
+    const maxSizeBytes = policy.maxSizeBytes ?? config.documentMaxSizeMb * 1024 * 1024
+    if (!Number.isFinite(maxSizeBytes) || maxSizeBytes < 0) {
+      throw new Error('Limite de tamanho de documento inválido')
+    }
     if (stats.size > maxSizeBytes) {
       await sendDocumentFailureMessage(sock, jid, 'Encontrei essa opção, mas o arquivo está maior que o limite permitido para envio automático. Entre em contato com o suporte.', BotResultCode.PAYLOAD_TOO_LARGE)
       errorLog('DOCUMENT_ERROR', 'Documento maior que o limite permitido', new Error('Documento maior que o limite permitido'), { user: jid, documentId: document.key, sizeBytes: stats.size, maxSizeBytes, resultCode: BotResultCode.PAYLOAD_TOO_LARGE })
@@ -238,9 +250,14 @@ export async function sendDocument(sock: WASocket, jid: string, document: Active
     })
     return { success: true, code: BotResultCode.OK, absolutePath: filePath }
   } catch (error) {
-    errorLog('DOCUMENT_ERROR', 'Erro ao enviar documento', error, { user: jid, documentId: document.key, document, resultCode: BotResultCode.INTERNAL_ERROR })
-    debugLog('Caminho absoluto de documento com erro de envio', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key, absolutePath: filePath })
+    errorLog('DOCUMENT_ERROR', 'Erro ao enviar documento', new Error('Falha interna no envio do documento'), {
+      user: jid,
+      documentId: document.key,
+      resultCode: BotResultCode.INTERNAL_ERROR,
+      errorType: error instanceof Error ? error.name : typeof error
+    })
+    debugLog('Documento com erro de envio', { eventType: 'DOCUMENT_ERROR', user: jid, documentId: document.key })
     await sendDocumentFailureMessage(sock, jid, 'Encontrei a opção, mas não consegui enviar o documento agora. Tente novamente em alguns instantes ou entre em contato com o suporte.', BotResultCode.INTERNAL_ERROR)
-    return { success: false, code: BotResultCode.INTERNAL_ERROR, absolutePath: filePath, errorMessage: error instanceof Error ? error.message : 'Erro ao enviar documento' }
+    return { success: false, code: BotResultCode.INTERNAL_ERROR, absolutePath: filePath, errorMessage: 'Erro ao enviar documento' }
   }
 }
