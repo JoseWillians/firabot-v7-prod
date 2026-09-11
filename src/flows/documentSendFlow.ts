@@ -5,6 +5,20 @@ import { botLog, registerUserLog } from '../services/logService.js'
 import { getMenuNameByState } from '../services/menuService.js'
 import { sendContextualFollowUp } from './conversationFlow.js'
 
+export interface DocumentSendFlowDependencies {
+  sendFile: typeof sendDocument
+  sendFollowUp: typeof sendContextualFollowUp
+  writeBotLog: typeof botLog
+  writeUserLog: typeof registerUserLog
+}
+
+const defaultDependencies: DocumentSendFlowDependencies = {
+  sendFile: sendDocument,
+  sendFollowUp: sendContextualFollowUp,
+  writeBotLog: botLog,
+  writeUserLog: registerUserLog
+}
+
 export async function sendDocumentWithTracking(
   sock: WASocket,
   userJid: string,
@@ -15,26 +29,28 @@ export async function sendDocumentWithTracking(
   menu: string,
   requestedMessage: string,
   sentMessage: string,
-  siblingOptions?: MenuOption[]
+  siblingOptions?: MenuOption[],
+  dependencyOverrides: Partial<DocumentSendFlowDependencies> = {}
 ) {
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides }
+
   await sock.sendMessage(userJid, { text: '👨‍💻 Um momento...' })
-  await registerUserLog(userJid, userName, requestedMessage, currentState, 'DOCUMENT_REQUESTED', { menu, documentId: document.key })
-  const result = await sendDocument(sock, userJid, document)
+  await dependencies.writeUserLog(userJid, userName, requestedMessage, currentState, 'DOCUMENT_REQUESTED', { menu, documentId: document.key })
+  const result = await dependencies.sendFile(sock, userJid, document)
 
   if (!result.success) {
-    await registerUserLog(userJid, userName, `Erro ao enviar documento: ${document.label}`, currentState, 'DOCUMENT_ERROR', {
+    await dependencies.writeUserLog(userJid, userName, `Erro ao enviar documento: ${document.label}`, currentState, 'DOCUMENT_ERROR', {
       menu,
       documentId: document.key,
       success: false,
-      resultCode: result.code,
-      errorMessage: result.errorMessage
+      resultCode: result.code
     })
     /**
      * Mesmo quando o arquivo falha, o usuário precisa sair com uma rota clara.
      * Mantemos as opções irmãs do submenu para permitir tentar outro documento
      * sem forçar a pessoa a recomeçar toda a conversa.
      */
-    await sendContextualFollowUp(sock, userJid, siblingOptions || [], option)
+    await dependencies.sendFollowUp(sock, userJid, siblingOptions || [], option)
     return
   }
 
@@ -44,7 +60,7 @@ export async function sendDocumentWithTracking(
    * Não usamos o follow-up genérico aqui, porque ele esconderia as outras
    * opções do mesmo menu, que é justamente a continuidade esperada.
    */
-  await sendContextualFollowUp(sock, userJid, siblingOptions || [], option)
-  botLog('DOCUMENT_SENT', 'Documento enviado', { user: userJid, option, menu: getMenuNameByState(currentState), stateBefore: currentState, stateAfter: currentState, documentId: document.key, resultCode: result.code })
-  await registerUserLog(userJid, userName, sentMessage, currentState, 'DOCUMENT_SENT', { menu, documentId: document.key, success: true, resultCode: result.code })
+  await dependencies.sendFollowUp(sock, userJid, siblingOptions || [], option)
+  dependencies.writeBotLog('DOCUMENT_SENT', 'Documento enviado', { user: userJid, option, menu: getMenuNameByState(currentState), stateBefore: currentState, stateAfter: currentState, documentId: document.key, resultCode: result.code })
+  await dependencies.writeUserLog(userJid, userName, sentMessage, currentState, 'DOCUMENT_SENT', { menu, documentId: document.key, success: true, resultCode: result.code })
 }

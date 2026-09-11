@@ -53,6 +53,7 @@ import {
   processDrcaDocsOption
 } from '../dist/flows/documentsFlow.js'
 import { processCourseSelectionOption, processPpcDocumentOption } from '../dist/flows/courseFlow.js'
+import { sendDocumentWithTracking } from '../dist/flows/documentSendFlow.js'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -257,6 +258,23 @@ function createCourseFlowDependencies(overrides = {}) {
       findPpc: async (_state, option) => option === ppcDocument.key ? ppcDocument : undefined,
       listPpcs: async () => [ppcDocument],
       sendTracked: async (...args) => events.push({ type: 'send-tracked', args }),
+      ...overrides
+    }
+  }
+}
+
+function createDocumentSendFlowDependencies(sendResult, overrides = {}) {
+  const events = []
+  return {
+    events,
+    dependencies: {
+      sendFile: async (...args) => {
+        events.push({ type: 'send-file', args })
+        return sendResult
+      },
+      sendFollowUp: async (...args) => events.push({ type: 'follow-up', args }),
+      writeBotLog: (...args) => events.push({ type: 'bot-log', args }),
+      writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
       ...overrides
     }
   }
@@ -834,6 +852,128 @@ await runAsyncTest('fluxo PPC propaga falha de busca sem envio ou log falso', as
     /falha controlada de PPC/
   )
   assert.deepEqual(fixture.events, [])
+})
+
+await runAsyncTest('envio rastreado registra sucesso uma vez e mantém continuidade contextual', async () => {
+  const document = {
+    key: 'doc-1',
+    label: 'Documento de teste',
+    path: '../fora-da-pasta.pdf',
+    summary: 'Resumo público do documento.'
+  }
+  const siblingOptions = [
+    { key: '1', label: 'Documento de teste' },
+    { key: '2', label: 'Outro documento' }
+  ]
+  const fixture = createDocumentSendFlowDependencies({
+    success: true,
+    code: BotResultCode.OK,
+    absolutePath: 'C:\\documentos\\teste.pdf'
+  })
+  const { sock, messages } = createFakeSocket()
+
+  await sendDocumentWithTracking(
+    sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '1',
+    'docs_drca',
+    document,
+    'documentos',
+    'Documento solicitado',
+    'Documento enviado',
+    siblingOptions,
+    fixture.dependencies
+  )
+
+  assert.deepEqual(fixture.events.map(event => event.type), [
+    'user-log',
+    'send-file',
+    'follow-up',
+    'bot-log',
+    'user-log'
+  ])
+  assert.equal(fixture.events[0].args[4], 'DOCUMENT_REQUESTED')
+  assert.equal(fixture.events.at(-1).args[4], 'DOCUMENT_SENT')
+  assert.equal(fixture.events.filter(event => event.type === 'send-file').length, 1)
+  assert.deepEqual(fixture.events[2].args[2], siblingOptions)
+  assert.equal(fixture.events[2].args[3], '1')
+  assert.equal(messages.length, 2)
+  assert.match(messages[0].content.text, /Um momento/)
+  assert.match(messages[1].content.text, /Resumo público do documento/)
+
+  const technicalContext = fixture.events[3].args[2]
+  assert.equal('path' in technicalContext, false)
+  assert.equal('summary' in technicalContext, false)
+  assert.equal('absolutePath' in technicalContext, false)
+})
+
+await runAsyncTest('envio rastreado registra falha canônica sem sucesso falso ou erro bruto', async () => {
+  const fixture = createDocumentSendFlowDependencies({
+    success: false,
+    code: BotResultCode.NOT_FOUND,
+    absolutePath: 'C:\\segredo\\arquivo.pdf',
+    errorMessage: 'ENOENT C:\\segredo\\arquivo.pdf token=nao-persistir'
+  })
+  const { sock, messages } = createFakeSocket()
+
+  await sendDocumentWithTracking(
+    sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '9',
+    'docs_drca',
+    { key: 'doc-9', label: 'Documento ausente', path: '../ausente.pdf' },
+    'documentos',
+    'Documento solicitado',
+    'Documento enviado',
+    undefined,
+    fixture.dependencies
+  )
+
+  assert.deepEqual(
+    fixture.events.map(event => event.type),
+    ['user-log', 'send-file', 'user-log', 'follow-up']
+  )
+  assert.equal(fixture.events[0].args[4], 'DOCUMENT_REQUESTED')
+  assert.equal(fixture.events[2].args[4], 'DOCUMENT_ERROR')
+  assert.equal(fixture.events.some(event => event.type === 'bot-log'), false)
+  assert.equal(fixture.events.some(event => event.args?.[4] === 'DOCUMENT_SENT'), false)
+  assert.deepEqual(fixture.events[3].args[2], [])
+  assert.equal(fixture.events[3].args[3], '9')
+  assert.equal(messages.length, 1)
+
+  const persistedDetails = fixture.events[2].args[5]
+  assert.equal('errorMessage' in persistedDetails, false)
+  assert.doesNotMatch(JSON.stringify(persistedDetails), /segredo|token|arquivo\.pdf/i)
+})
+
+await runAsyncTest('envio rastreado propaga exceção não normalizada sem follow-up ou sucesso falso', async () => {
+  const fixture = createDocumentSendFlowDependencies(undefined, {
+    sendFile: async (...args) => {
+      fixture.events.push({ type: 'send-file', args })
+      throw new Error('falha controlada do provider')
+    }
+  })
+
+  await assert.rejects(
+    sendDocumentWithTracking(
+      createFakeSocket().sock,
+      'user@s.whatsapp.net',
+      'Aluno',
+      '1',
+      'docs_drca',
+      { key: 'doc-1', label: 'Documento', path: '../fora.pdf' },
+      'documentos',
+      'Documento solicitado',
+      'Documento enviado',
+      [],
+      fixture.dependencies
+    ),
+    /falha controlada do provider/
+  )
+
+  assert.deepEqual(fixture.events.map(event => event.type), ['user-log', 'send-file'])
 })
 
 await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
