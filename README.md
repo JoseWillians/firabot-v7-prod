@@ -241,6 +241,11 @@ npm run ci:local
 Esse comando executa lint, verificação de tipos, build e testes unitários. Para
 rodar as etapas separadamente, use `npm run lint` e `npm run typecheck`.
 
+O CI também verifica o Prettier apenas nos arquivos de código/configuração
+alterados no commit ou pull request, sem reformatar o legado. Para formatar um
+arquivo alterado, use `npx prettier --write caminho/do/arquivo` e valide com
+`npm run format:check`.
+
 Relatório de cobertura com limiares mínimos:
 
 ```bash
