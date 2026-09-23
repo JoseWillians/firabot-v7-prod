@@ -25,15 +25,28 @@ const allowedStates = new Set<UserState>([
 interface MemoryStateRecord {
   state: UserState
   updatedAt: Date
+  pending?: boolean
+  requiresMenuConfirmation?: boolean
 }
 
 export interface UserStateLookupResult {
   state: UserState
   source: 'database' | 'memory' | 'default'
   databaseAvailable: boolean
+  requiresMenuConfirmation?: boolean
 }
 
 const memoryStates = new Map<string, MemoryStateRecord>()
+const maxMemoryStates = 1000
+function rememberState(jid: string, record: MemoryStateRecord) {
+  memoryStates.delete(jid)
+  for (const [key, value] of memoryStates) {
+    if (isUserStateExpired(value.updatedAt)) memoryStates.delete(key)
+  }
+  if (memoryStates.size >= maxMemoryStates) memoryStates.delete(memoryStates.keys().next().value!)
+  memoryStates.set(jid, record)
+}
+const stateDependencies = { getUserStateRecord, setUserState, botLog, debugLog, errorLog }
 
 /**
  * Restringe estados aceitos pelo roteador de menus.
@@ -61,18 +74,41 @@ export function isUserStateExpired(updatedAt: Date | null | undefined, now = new
  * pode fazer uma opção de submenu ser interpretada como menu principal.
  */
 export function canSafelyRouteNumericInput(result: UserStateLookupResult) {
-  return result.databaseAvailable || result.source === 'memory'
+  return !result.requiresMenuConfirmation && (result.databaseAvailable || result.source === 'memory')
 }
 
-export async function getCurrentUserStateResult(phoneNumber: string): Promise<UserStateLookupResult> {
+export async function getCurrentUserStateResult(phoneNumber: string, overrides: Partial<typeof stateDependencies> = {}): Promise<UserStateLookupResult> {
+  const dependencies = { ...stateDependencies, ...overrides }
   try {
-    const record = await getUserStateRecord(phoneNumber)
+    // Reconciliar primeiro: o banco recuperado pode conter um menu anterior.
+    // A identidade do registro evita limpar uma transicao concorrente mais nova.
+    const pending = memoryStates.get(phoneNumber)
+    if (pending?.pending) {
+      if (isUserStateExpired(pending.updatedAt)) {
+        await updateUserState(phoneNumber, 'main', dependencies)
+        const reset = memoryStates.get(phoneNumber)!
+        return { state: reset.state, source: reset.pending ? 'memory' : 'database', databaseAvailable: !reset.pending }
+      }
+      await dependencies.setUserState(phoneNumber, pending.state)
+      if (memoryStates.get(phoneNumber) === pending) pending.pending = false
+      const latest = memoryStates.get(phoneNumber)!
+      return { state: latest.state, source: latest.pending ? 'memory' : 'database', databaseAvailable: !latest.pending }
+    }
+    const record = await dependencies.getUserStateRecord(phoneNumber)
+    // Sem contexto confirmado neste processo, o banco pode conter uma transição
+    // anterior à queda. Consumir a primeira escolha sem interpretá-la.
+    if (!pending || pending.requiresMenuConfirmation) {
+      rememberState(phoneNumber, { state: 'main', updatedAt: new Date(), requiresMenuConfirmation: true })
+      return { state: 'main', source: 'database', databaseAvailable: true, requiresMenuConfirmation: true }
+    }
     const state = normalizeUserState(record.state)
 
     if (isUserStateExpired(record.updatedAt)) {
-      memoryStates.set(phoneNumber, { state: 'main', updatedAt: new Date() })
-      await setUserState(phoneNumber, 'main')
-      botLog('USER_STATE_READ', 'Estado expirado por TTL; usuário voltou para main', {
+      const reset: MemoryStateRecord = { state: 'main', updatedAt: new Date(), pending: true }
+      rememberState(phoneNumber, reset)
+      await dependencies.setUserState(phoneNumber, 'main')
+      reset.pending = false
+      dependencies.botLog('USER_STATE_READ', 'Estado expirado por TTL; usuário voltou para main', {
         user: phoneNumber,
         stateBefore: state,
         stateAfter: 'main',
@@ -81,8 +117,8 @@ export async function getCurrentUserStateResult(phoneNumber: string): Promise<Us
       return { state: 'main', source: 'database', databaseAvailable: true }
     }
 
-    memoryStates.set(phoneNumber, { state, updatedAt: record.updatedAt || new Date() })
-    debugLog('Estado do usuário carregado', {
+    rememberState(phoneNumber, { state, updatedAt: record.updatedAt || new Date() })
+    dependencies.debugLog('Estado do usuário carregado', {
       eventType: 'USER_STATE_READ',
       user: phoneNumber,
       stateAfter: state,
@@ -93,12 +129,12 @@ export async function getCurrentUserStateResult(phoneNumber: string): Promise<Us
   } catch (error) {
     const fallback = memoryStates.get(phoneNumber)
     const fallbackState = fallback && !isUserStateExpired(fallback.updatedAt) ? fallback.state : undefined
-    errorLog('DATABASE_ERROR', 'Erro ao buscar estado do usuário no banco', error, {
+    dependencies.errorLog('DATABASE_ERROR', 'Erro ao buscar ou reconciliar estado do usuário no banco', error, {
       user: phoneNumber,
       fallback: fallbackState || 'main'
     })
     return fallbackState
-      ? { state: fallbackState, source: 'memory', databaseAvailable: false }
+      ? { state: fallbackState, source: 'memory', databaseAvailable: false, ...(fallback?.requiresMenuConfirmation ? { requiresMenuConfirmation: true } : {}) }
       : { state: 'main', source: 'default', databaseAvailable: false }
   }
 }
@@ -107,13 +143,16 @@ export async function getCurrentUserState(phoneNumber: string): Promise<UserStat
   return (await getCurrentUserStateResult(phoneNumber)).state
 }
 
-export async function updateUserState(phoneNumber: string, state: UserState): Promise<UserState> {
-  memoryStates.set(phoneNumber, { state, updatedAt: new Date() })
+export async function updateUserState(phoneNumber: string, state: UserState, overrides: Partial<typeof stateDependencies> = {}): Promise<UserState> {
+  const dependencies = { ...stateDependencies, ...overrides }
+  const record: MemoryStateRecord = { state, updatedAt: new Date(), pending: true }
+  rememberState(phoneNumber, record)
 
   try {
-    await setUserState(phoneNumber, state)
+    await dependencies.setUserState(phoneNumber, state)
+    if (memoryStates.get(phoneNumber) === record) record.pending = false
   } catch (error) {
-    errorLog('DATABASE_ERROR', 'Erro ao salvar estado do usuário no banco', error, { user: phoneNumber, state })
+    dependencies.errorLog('DATABASE_ERROR', 'Erro ao salvar estado do usuário no banco; sincronizacao pendente', error, { user: phoneNumber, state })
   }
 
   return state

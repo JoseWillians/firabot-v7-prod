@@ -2,15 +2,16 @@ import { WASocket } from 'baileys'
 import { findCourseByOption } from '../menus/courseMenu.js'
 import { UserState } from '../menus/types.js'
 import { registerUserLog } from '../services/logService.js'
-import { formatCourseMenu, formatPpcMenuByState, getMenuNameByState } from '../services/menuService.js'
+import { formatCourseMenu, getMenuNameByState } from '../services/menuService.js'
+import { formatDocumentCatalog, loadDocumentCatalog } from './documentCatalogFlow.js'
+import { isDocumentMenuCurrent, rememberDocumentMenu } from '../services/documentMenuSnapshotService.js'
 import { updateUserState } from '../services/userStateService.js'
-import { findPpcDocumentByOption, getAvailablePpcDocuments } from '../services/courseDocumentService.js'
+import { getAvailablePpcDocuments } from '../services/courseDocumentService.js'
 import { sendDocumentWithTracking } from './documentSendFlow.js'
 
 export interface CourseFlowDependencies {
   setState: typeof updateUserState
   writeUserLog: typeof registerUserLog
-  findPpc: typeof findPpcDocumentByOption
   listPpcs: typeof getAvailablePpcDocuments
   sendTracked: typeof sendDocumentWithTracking
 }
@@ -18,7 +19,6 @@ export interface CourseFlowDependencies {
 const defaultDependencies: CourseFlowDependencies = {
   setState: updateUserState,
   writeUserLog: registerUserLog,
-  findPpc: findPpcDocumentByOption,
   listPpcs: getAvailablePpcDocuments,
   sendTracked: sendDocumentWithTracking
 }
@@ -35,7 +35,10 @@ export async function processCourseSelectionOption(
   const course = findCourseByOption(option)
 
   if (course) {
-    await sock.sendMessage(userJid, { text: formatPpcMenuByState(course.state) || formatCourseMenu() })
+    const documents = await loadDocumentCatalog(sock, userJid, () => dependencies.listPpcs(course.state))
+    if (documents === null) return
+    await sock.sendMessage(userJid, { text: formatDocumentCatalog(documents, course.label) })
+    rememberDocumentMenu(userJid, course.state, documents)
     const stateAfter = await dependencies.setState(userJid, course.state)
     await dependencies.writeUserLog(userJid, userName, `Curso selecionado: ${course.label}`, currentState, 'MENU_OPENED', { stateBefore: currentState, stateAfter, menu: getMenuNameByState(stateAfter), success: true })
     return
@@ -56,13 +59,19 @@ export async function processPpcDocumentOption(
   dependencyOverrides: Partial<CourseFlowDependencies> = {}
 ) {
   const dependencies = { ...defaultDependencies, ...dependencyOverrides }
-  const menuText = formatPpcMenuByState(currentState) || formatCourseMenu()
-  const document = await dependencies.findPpc(currentState, option)
+  const documents = await loadDocumentCatalog(sock, userJid, () => dependencies.listPpcs(currentState))
+  if (documents === null) return
+  const menuText = formatDocumentCatalog(documents, getMenuNameByState(currentState))
+  const current = isDocumentMenuCurrent(userJid, currentState, documents)
+  const document = current ? documents.find(item => item.key === option) : undefined
 
   if (!document) {
     await sock.sendMessage(userJid, {
-      text: `Não consegui entender essa opção no menu de PPC. Escolha uma opção válida:\n\n${menuText}`
+      text: documents.length
+        ? `${current ? 'Não consegui entender essa opção no menu de PPC.' : 'Atualizei a lista de PPCs. Escolha novamente para confirmar o arquivo.'}\n\n${menuText}`
+        : menuText
     })
+    rememberDocumentMenu(userJid, currentState, documents)
     await dependencies.writeUserLog(userJid, userName, `Opção inválida em PPC: ${option}`, currentState, 'INVALID_OPTION', { menu: getMenuNameByState(currentState), success: false })
     return
   }
@@ -77,6 +86,6 @@ export async function processPpcDocumentOption(
     'curso',
     `PPC solicitado: ${document.label}`,
     `PPC enviado: ${document.label}`,
-    await dependencies.listPpcs(currentState)
+    documents
   )
 }

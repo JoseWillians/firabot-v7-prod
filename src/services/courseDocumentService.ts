@@ -1,27 +1,12 @@
-import { getPpcCategoryCodeByState, getPpcDocumentsByState } from '../menus/courseMenu.js'
+import { getPpcCategoryCodeByState } from '../menus/courseMenu.js'
 import { UserState } from '../menus/types.js'
 import { ActiveDocument, getAvailableDocuments } from './documentService.js'
 
-function mapFallbackPpcs(state: UserState): ActiveDocument[] {
-  return getPpcDocumentsByState(state).map(document => ({
-    key: document.key,
-    label: document.label,
-    path: document.path,
-    summary: document.summary
-  }))
-}
-
-export async function getAvailablePpcDocuments(state: UserState): Promise<ActiveDocument[]> {
-  /**
-   * PPCs já podem vir da tabela docs por category_code. Enquanto o painel e o
-   * cadastro dinâmico não existem, mantemos fallback local para não quebrar o
-   * fluxo dos PDFs que já estão no repositório.
-   */
+export async function getAvailablePpcDocuments(state: UserState, listDocuments: typeof getAvailableDocuments = getAvailableDocuments): Promise<ActiveDocument[]> {
+  // A ausência de PPCs ativos não autoriza reativar documentos locais.
   const categoryCode = getPpcCategoryCodeByState(state)
-  if (!categoryCode) return mapFallbackPpcs(state)
-
-  const databaseDocuments = await getAvailableDocuments(categoryCode)
-  return databaseDocuments.length ? databaseDocuments : mapFallbackPpcs(state)
+  if (!categoryCode) return []
+  return listDocuments(categoryCode)
 }
 
 export async function findPpcDocumentByOption(state: UserState, option: string) {

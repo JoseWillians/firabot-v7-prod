@@ -11,6 +11,7 @@
     "test:coverage": "npm run build:coverage && npm run test:coverage:no-build",
     "test:coverage:no-build": "c8 node tests/run-tests.mjs",
     "test:integration": "node tests/integration/message-handler.integration.mjs",
+    "beta:report": "node scripts/beta-report.mjs",
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "ci:local": "npm run lint && npm run typecheck && npm run test:coverage",

@@ -28,7 +28,10 @@ export async function openSupportFlow(sock: WASocket, userJid: string, userName:
   await registerUserLog(userJid, userName, 'Menu principal: Suporte aberto', currentState, 'MENU_OPENED', { menu: 'suporte', stateAfter: 'suporte', success: true })
 }
 
-export async function handleSupportMessage(sock: WASocket, userJid: string, userName: string, message: string, currentState: UserState) {
+const supportDependencies = { createSupportTicket, errorLog, registerUserLog, updateUserState, sendFollowUp }
+
+export async function handleSupportMessage(sock: WASocket, userJid: string, userName: string, message: string, currentState: UserState, overrides: Partial<typeof supportDependencies> = {}) {
+  const dependencies = { ...supportDependencies, ...overrides }
   /**
    * Enquanto não existe painel com administradores por setor, o suporte apenas
    * registra a mensagem do usuário e orienta o próximo passo. Quando o painel
@@ -38,15 +41,20 @@ export async function handleSupportMessage(sock: WASocket, userJid: string, user
    * guardar CPF, matrícula, informação social ou outro dado sensível.
    */
   try {
-    await createSupportTicket(userJid, userName, sanitizeSupportMessage(message))
+    await dependencies.createSupportTicket(userJid, userName, sanitizeSupportMessage(message))
   } catch (error) {
-    errorLog('DATABASE_ERROR', 'Erro ao registrar chamado de suporte na fila administrativa', error, { user: userJid })
+    dependencies.errorLog('DATABASE_ERROR', 'Erro ao registrar chamado de suporte na fila administrativa', error, { user: userJid, resultCode: 503 })
+    // Sem persistencia confirmada, manter a captura aberta e nunca prometer sucesso.
+    await sock.sendMessage(userJid, {
+      text: 'Não consegui registrar sua mensagem agora. Tente enviá-la novamente em alguns instantes, digite 0 para voltar ao menu principal ou encerrar para terminar. Código de referência: 503.'
+    })
+    return
   }
 
-  await registerUserLog(userJid, userName, `Mensagem de suporte registrada (${message.length} caracteres)`, currentState, 'SUPPORT_REQUEST', { menu: 'suporte', success: true })
+  await dependencies.updateUserState(userJid, 'suporte_confirmacao')
+  await dependencies.registerUserLog(userJid, userName, `Mensagem de suporte registrada (${message.length} caracteres)`, currentState, 'SUPPORT_REQUEST', { menu: 'suporte', success: true })
   await sock.sendMessage(userJid, {
     text: formatSupportAcknowledgement()
   })
-  await updateUserState(userJid, 'suporte_confirmacao')
-  await sendFollowUp(sock, userJid, 0)
+  await dependencies.sendFollowUp(sock, userJid, 0)
 }

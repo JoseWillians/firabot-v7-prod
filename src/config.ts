@@ -5,7 +5,8 @@ import dotenv from 'dotenv'
  * Isso evita espalhar process.env pelo projeto e facilita trocar nomes
  * de variáveis sem mexer nas regras de negócio do bot.
  */
-dotenv.config({ quiet: true })
+// Testes podem apontar para um arquivo isolado, sem carregar o .env operacional.
+dotenv.config({ quiet: true, path: process.env.DOTENV_CONFIG_PATH || '.env' })
 
 const toNumber = (value: string | undefined, fallback: number) => {
   const parsed = Number(value)

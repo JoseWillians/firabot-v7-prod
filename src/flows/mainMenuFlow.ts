@@ -1,8 +1,8 @@
 import { WASocket } from 'baileys'
 import { docsCategoryMenu } from '../menus/docsMenu.js'
-import { formatOpenNoticesMessage } from '../menus/noticesMenu.js'
+import { formatOpenNoticesMessage, NoticesUnavailableError } from '../menus/noticesMenu.js'
 import { UserState } from '../menus/types.js'
-import { formatImportantLinksMessage } from '../services/importantLinkService.js'
+import { formatImportantLinksMessage, ImportantLinksUnavailableError } from '../services/importantLinkService.js'
 import { botLog, registerUserLog } from '../services/logService.js'
 import { formatCourseMenu, formatMainMenu, formatMenu } from '../services/menuService.js'
 import { updateUserState } from '../services/userStateService.js'
@@ -68,19 +68,37 @@ export async function processMainOption(
       break
     }
 
-    case '4':
-      await sock.sendMessage(userJid, { text: await dependencies.formatLinks() })
+    case '4': {
+      let message: string
+      try {
+        message = await dependencies.formatLinks()
+      } catch (error) {
+        if (!(error instanceof ImportantLinksUnavailableError)) throw error
+        await sock.sendMessage(userJid, { text: 'Os links importantes estão temporariamente indisponíveis. Tente novamente em alguns instantes. Código de referência: 503.' })
+        break
+      }
+      await sock.sendMessage(userJid, { text: message })
       await dependencies.sendFollowUp(sock, userJid, 0)
       await dependencies.setState(userJid, 'links')
       await dependencies.writeUserLog(userJid, userName, 'Menu principal: Links Importantes', currentState, 'MENU_OPTION_SELECTED', { menu: 'menu principal', stateAfter: 'links', success: true })
       break
+    }
 
-    case '5':
-      await sock.sendMessage(userJid, { text: await dependencies.formatNotices() })
+    case '5': {
+      let message: string
+      try {
+        message = await dependencies.formatNotices()
+      } catch (error) {
+        if (!(error instanceof NoticesUnavailableError)) throw error
+        await sock.sendMessage(userJid, { text: 'Os editais estão temporariamente indisponíveis. Tente novamente em alguns instantes. Código de referência: 503.' })
+        break
+      }
+      await sock.sendMessage(userJid, { text: message })
       await dependencies.sendFollowUp(sock, userJid, 0)
       await dependencies.setState(userJid, 'editais')
       await dependencies.writeUserLog(userJid, userName, 'Menu principal: Editais Abertos', currentState, 'MENU_OPTION_SELECTED', { menu: 'menu principal', stateAfter: 'editais', success: true })
       break
+    }
 
     case '6':
       await sock.sendMessage(userJid, { text: '🍴 *RU*: Almoço das 11:30 às 13:30.' })

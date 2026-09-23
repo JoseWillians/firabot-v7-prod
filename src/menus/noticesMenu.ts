@@ -60,23 +60,34 @@ export const openNotices: OpenNotice[] = [
   }
 ]
 
-export async function formatOpenNoticesMessage(options: { useDatabase?: boolean } = {}) {
-  let notices: OpenNotice[] = []
+export class NoticesUnavailableError extends Error {
+  constructor() {
+    super('Editais temporariamente indisponíveis')
+    this.name = 'NoticesUnavailableError'
+  }
+}
+
+export async function formatOpenNoticesMessage(options: {
+  useDatabase?: boolean
+  listNotices?: typeof getActiveNotices
+} = {}) {
+  let notices: OpenNotice[]
 
   if (options.useDatabase !== false) {
     try {
-      const databaseNotices = await getActiveNotices()
+      const databaseNotices = await (options.listNotices ?? getActiveNotices)({ throwOnError: true })
       notices = databaseNotices.map(notice => ({
         title: notice.title,
         url: notice.url || '',
         status: notice.status.toLowerCase().includes('inscri') ? 'inscricoes_abertas' : 'em_andamento'
       }))
-    } catch (error) {
-      errorLog('DATABASE_ERROR', 'Erro ao carregar editais dinâmicos. Usando fallback local', error)
+    } catch {
+      errorLog('DATABASE_ERROR', 'Erro ao carregar editais ativos', new Error('Consulta de editais indisponível'), { resultCode: 503 })
+      throw new NoticesUnavailableError()
     }
+  } else {
+    notices = openNotices.slice(0, 10)
   }
-
-  if (!notices.length) notices = openNotices.slice(0, 10)
 
   const noticesText = notices
     .map((notice, index) => {
@@ -87,8 +98,8 @@ export async function formatOpenNoticesMessage(options: { useDatabase?: boolean 
     })
     .join('\n\n')
 
+  const summary = noticesText || 'Não há editais ativos cadastrados no momento.'
   return `📢 *Editais IFMA*\n\n` +
-         `Consulte os editais encontrados na página oficial de processos seletivos do IFMA:\n\n` +
-         `${noticesText}\n\n` +
+         `${summary}\n\n` +
          `Fonte: https://processoseletivo.ifma.edu.br/`
 }

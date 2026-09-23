@@ -10,6 +10,7 @@ export type BotEventType =
   | 'BOT_RECONNECTING'
   | 'BOT_LOGGED_OUT'
   | 'MESSAGE_RECEIVED'
+  | 'MESSAGE_PROCESSED'
   | 'MESSAGE_IGNORED_OLD'
   | 'MESSAGE_IGNORED_SELF'
   | 'MESSAGE_IGNORED_GROUP'
@@ -215,6 +216,13 @@ export function errorLog(eventType: BotEventType, message: string, error: unknow
  * tokens, QR Code, senha ou outros dados sensíveis.
  */
 export async function registerUserLog(phoneNumber: string, userName: string, message: string, state?: string, eventType: BotEventType = 'MESSAGE_RECEIVED', details: UserLogDetails = {}) {
+  if (eventType === 'INVALID_OPTION') {
+    // Publica somente o evento agregado necessario; conteudo e identificador ficam fora da metrica.
+    botLog('INVALID_OPTION', 'Opção inválida recebida', {
+      stateBefore: details.stateBefore ?? state,
+      resultCode: BotResultCode.BAD_REQUEST
+    })
+  }
   try {
     await saveLog(phoneNumber, userName, preview(message), state, eventType, {
       ...details,

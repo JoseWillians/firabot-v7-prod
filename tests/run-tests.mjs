@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { rememberDocumentMenu } from '../dist/services/documentMenuSnapshotService.js'
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -56,6 +57,7 @@ import {
 } from '../dist/flows/documentsFlow.js'
 import { processCourseSelectionOption, processPpcDocumentOption } from '../dist/flows/courseFlow.js'
 import { sendDocumentWithTracking } from '../dist/flows/documentSendFlow.js'
+import { runConnectionLifecycleTests } from './connection-lifecycle.mjs'
 
 function runTest(name, testFn) {
   const result = testFn()
@@ -276,12 +278,7 @@ function createDocumentsFlowDependencies(overrides = {}) {
     drcaDocument,
     caeDocument,
     dependencies: {
-      formatDocuments: async category => category === 'cae' ? 'MENU CAE DINÂMICO' : 'MENU DRCA DINÂMICO',
       listDocuments: async category => category === 'cae' ? [caeDocument] : [drcaDocument],
-      findDocument: async (option, category = 'drca') => {
-        const document = category === 'cae' ? caeDocument : drcaDocument
-        return option === document.key ? document : undefined
-      },
       setState: async (_jid, state) => {
         events.push({ type: 'set-state', state })
         return state
@@ -311,7 +308,6 @@ function createCourseFlowDependencies(overrides = {}) {
         return state
       },
       writeUserLog: async (...args) => events.push({ type: 'user-log', args }),
-      findPpc: async (_state, option) => option === ppcDocument.key ? ppcDocument : undefined,
       listPpcs: async () => [ppcDocument],
       sendTracked: async (...args) => events.push({ type: 'send-tracked', args }),
       ...overrides
@@ -637,6 +633,9 @@ await runAsyncTest('message handler roteia comandos, conversa, suporte, números
     const routeEvent = fixture.events.find(event => event.type === scenario.expected)
     assert.ok(routeEvent, `rota ausente para ${scenario.body}`)
     if (scenario.option) assert.equal(routeEvent.args[3], scenario.option)
+    const metricsEvent = fixture.events.find(event => event.type === 'bot-log' && event.args[0] === 'MESSAGE_PROCESSED')
+    assert.equal(typeof metricsEvent?.args[2]?.durationMs, 'number')
+    assert.equal(metricsEvent?.args[2]?.success, true)
   }
 
   const limited = createMessageDependencies({ canRespond: () => false })
@@ -759,8 +758,8 @@ await runAsyncTest('fluxo principal propaga falha de conteúdo sem registrar suc
 
 await runAsyncTest('fluxo de categorias abre DRCA, CAE disponível e CAE vazio', async () => {
   const scenarios = [
-    { option: '1', expectedState: 'docs_drca', expectedText: /MENU DRCA DINÂMICO/ },
-    { option: '2', expectedState: 'docs_cae', expectedText: /MENU CAE DINÂMICO/ },
+    { option: '1', expectedState: 'docs_drca', expectedText: /Documento DRCA de teste/ },
+    { option: '2', expectedState: 'docs_cae', expectedText: /Documento CAE de teste/ },
     { option: '2', expectedState: 'docs_cae', emptyCae: true, expectedText: /Ainda não há documentos da CAE/ }
   ]
 
@@ -796,6 +795,7 @@ await runAsyncTest('fluxos DRCA e CAE encaminham documento válido com opções 
   ]) {
     const fixture = createDocumentsFlowDependencies()
 
+    rememberDocumentMenu('user@s.whatsapp.net', route.state, [route.documentType === 'cae' ? fixture.caeDocument : fixture.drcaDocument])
     await route.process(
       createFakeSocket().sock,
       'user@s.whatsapp.net',
@@ -816,13 +816,13 @@ await runAsyncTest('fluxos DRCA e CAE orientam opção ausente com lista ou fall
   const drca = createDocumentsFlowDependencies()
   const drcaSocket = createFakeSocket()
   await processDrcaDocsOption(drcaSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_drca', drca.dependencies)
-  assert.match(drcaSocket.messages[0].content.text, /MENU DRCA DINÂMICO/)
+  assert.match(drcaSocket.messages[0].content.text, /Documento DRCA de teste/)
   assert.deepEqual(drca.events.map(event => event.type), ['user-log'])
 
   const cae = createDocumentsFlowDependencies()
   const caeSocket = createFakeSocket()
   await processCaeDocsOption(caeSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_cae', cae.dependencies)
-  assert.match(caeSocket.messages[0].content.text, /MENU CAE DINÂMICO/)
+  assert.match(caeSocket.messages[0].content.text, /Documento CAE de teste/)
   assert.deepEqual(cae.events.map(event => event.type), ['user-log'])
 
   const emptyCae = createDocumentsFlowDependencies({ listDocuments: async () => [] })
@@ -834,7 +834,7 @@ await runAsyncTest('fluxos DRCA e CAE orientam opção ausente com lista ou fall
 
 await runAsyncTest('fluxo documental propaga falha de consulta sem registrar sucesso', async () => {
   const fixture = createDocumentsFlowDependencies({
-    findDocument: async () => { throw new Error('falha controlada de documentos') }
+    listDocuments: async () => { throw new Error('falha controlada de documentos') }
   })
 
   await assert.rejects(
@@ -872,6 +872,7 @@ await runAsyncTest('seleção de curso cobre os cinco cursos e opção inválida
 
 await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ausente', async () => {
   const valid = createCourseFlowDependencies()
+  rememberDocumentMenu('user@s.whatsapp.net', 'curso_eng_comp', [valid.ppcDocument])
   await processPpcDocumentOption(
     createFakeSocket().sock,
     'user@s.whatsapp.net',
@@ -894,13 +895,13 @@ await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ause
     'curso_eng_civil',
     invalid.dependencies
   )
-  assert.match(invalidSocket.messages[0].content.text, /PPC - Engenharia Civil/)
+  assert.match(invalidSocket.messages[0].content.text, /PPC de Engenharia Civil/)
   assert.deepEqual(invalid.events.map(event => event.type), ['user-log'])
 })
 
 await runAsyncTest('fluxo PPC propaga falha de busca sem envio ou log falso', async () => {
   const fixture = createCourseFlowDependencies({
-    findPpc: async () => { throw new Error('falha controlada de PPC') }
+    listPpcs: async () => { throw new Error('falha controlada de PPC') }
   })
 
   await assert.rejects(
@@ -1701,4 +1702,10 @@ await runAsyncTest('socket fake captura mensagem de fallback sem WhatsApp real',
   assert.match(messages[0].content.text, /1 - Biblioteca/)
 })
 
+await import('./beta-metrics.mjs')
+await import('./catalog-policy.mjs')
+await import('./editorial-catalog-policy.mjs')
+await runConnectionLifecycleTests(runAsyncTest)
+await import('./recovery-regressions.mjs')
+await import('./followup-stop.mjs')
 console.log('Todos os testes passaram.')

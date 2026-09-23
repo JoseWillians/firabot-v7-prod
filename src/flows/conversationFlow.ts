@@ -7,6 +7,21 @@ import { formatMainMenu, getMenuNameByState } from '../services/menuService.js'
 import { updateUserState } from '../services/userStateService.js'
 
 const pendingFollowUps = new Map<string, NodeJS.Timeout>()
+const activeFollowUps = new Set<Promise<void>>()
+let followUpsStopped = false
+
+async function runFollowUp(send: () => Promise<void>) {
+  if (followUpsStopped) return
+  const work = Promise.resolve().then(send)
+  activeFollowUps.add(work)
+  try { await work } finally { activeFollowUps.delete(work) }
+}
+
+export async function stopPendingFollowUps() {
+  followUpsStopped = true
+  for (const jid of pendingFollowUps.keys()) cancelPendingFollowUp(jid)
+  await Promise.allSettled([...activeFollowUps])
+}
 
 export function cancelPendingFollowUp(jid: string) {
   const timer = pendingFollowUps.get(jid)
@@ -17,10 +32,11 @@ export function cancelPendingFollowUp(jid: string) {
 }
 
 function scheduleFollowUp(jid: string, send: () => Promise<void>, delayMs: number) {
+  if (followUpsStopped) return
   cancelPendingFollowUp(jid)
   const timer = setTimeout(async () => {
     pendingFollowUps.delete(jid)
-    await send()
+    await runFollowUp(send)
   }, delayMs)
   pendingFollowUps.set(jid, timer)
 }
@@ -57,7 +73,7 @@ export async function sendFollowUp(sock: WASocket, jid: string, delayMs = 1500) 
   }
 
   if (delayMs <= 0) {
-    await send()
+    await runFollowUp(send)
     return
   }
 

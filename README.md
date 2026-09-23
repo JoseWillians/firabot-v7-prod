@@ -4,6 +4,49 @@ Bot de WhatsApp em TypeScript para atendimento acadêmico do IFMA Santa Inês. E
 
 ## Requisitos
 
+### Validacao de resiliencia
+
+`npm test` inclui regressões de recuperação do estado após falha do banco,
+persistência de suporte, catálogo alterado entre menu e seleção e concorrência
+entre mensagens. Para não carregar o `.env` operacional durante testes isolados,
+defina `DOTENV_CONFIG_PATH` para um arquivo de ambiente exclusivo de testes
+(ou um caminho inexistente quando todas as dependências forem simuladas).
+
+Os menus de DRCA, CAE e PPC usam a lista efetivamente apresentada. Se ela mudar
+ou expirar em 30 minutos, o bot mostra a lista atual e solicita nova escolha;
+não envia silenciosamente outro PDF. A memória desses menus é limitada a 1.000
+entradas por processo. Após reinício, uma seleção sem menu em memória exige
+nova confirmação. O suporte só confirma o registro após persistência no banco.
+
+Os resultados e pendências locais estão em `memory.md` e `docs/backlog.md`.
+
+O socket possui reconexão por geração e trata SIGINT/SIGTERM com encerramento
+gracioso: interrompe novas entradas, drena mensagens e acompanhamentos e fecha
+o pool MySQL. O limite local de parada é 15 segundos; o timeout equivalente do
+servidor deverá ser configurado acima desse valor.
+
+Editais, links importantes e catálogos de documentos usam registros ativos do
+banco como fonte. Catálogo vazio é informado como vazio; falha de consulta gera
+orientação 503 e não ativa conteúdo local antigo.
+
+Para resumir um fluxo JSONL técnico sem reproduzir identificadores ou conteúdo,
+compile o projeto e envie a entrada ao agregador:
+
+```powershell
+npm run build
+Get-Content .\eventos-tecnicos.jsonl | npm run beta:report
+```
+
+O arquivo de entrada deve vir de um coletor autorizado de JSONL técnico; o
+destino/coletor será definido junto com o servidor. Não grave a saída completa
+do terminal para formar esse arquivo, pois o pareamento imprime um QR Code.
+P50/P95 são limites superiores aproximados de histograma. O tempo começa antes
+da fila e inclui espera e processamento técnico, mas não comprova entrega,
+leitura ou conclusão do atendimento. Recebimentos e encerramentos ficam
+separados no relatório.
+
+### Ambiente
+
 - Node.js 22.13 ou superior
 - npm ou yarn
 - MySQL

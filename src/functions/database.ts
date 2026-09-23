@@ -350,7 +350,8 @@ export async function countActiveDocs(): Promise<number> {
 /**
  * Links importantes também são conteúdo administrável pelo painel.
  * O bot lê a tabela em tempo de execução para que inclusões feitas pelo painel
- * apareçam sem alteração de código, mantendo fallback no fluxo de menu.
+ * apareçam sem alteração de código. Fluxos que precisam distinguir vazio de
+ * indisponibilidade devem usar `throwOnError: true`.
  */
 export async function getActiveImportantLinks(options: { throwOnError?: boolean } = {}): Promise<ActiveLinkRecord[]> {
     try {
@@ -371,9 +372,9 @@ export async function getActiveImportantLinks(options: { throwOnError?: boolean 
 }
 
 /**
- * Editais cadastrados no painel são a fonte dinâmica preferencial.
- * A lista local continua existindo apenas como fallback quando o banco ainda
- * não tem dados suficientes ou está temporariamente indisponível.
+ * Editais ativos cadastrados no painel são a fonte dinâmica. Fluxos que
+ * precisam distinguir uma lista vazia de uma falha usam `throwOnError: true`;
+ * a compatibilidade padrão retorna [] em caso de erro.
  */
 export async function getActiveNotices(options: { throwOnError?: boolean } = {}): Promise<ActiveNoticeRecord[]> {
     try {

@@ -11,10 +11,11 @@ import { canRespondToUser } from '../services/spamGuardService.js'
 import { extractMessageText } from '../services/messageTextService.js'
 import { isNumericOption } from '../services/menuService.js'
 import { shouldCaptureSupportMessage } from '../services/menuRoutingService.js'
-import { processMessageBatch, shouldProcessMessageId } from '../services/messageBatchService.js'
+import { shouldProcessMessageId } from '../services/messageBatchService.js'
 import { detectConversationIntent } from '../services/conversationIntentService.js'
 import { getMessageJidCandidates } from '../services/userIdentityService.js'
 import { upsertUserIdentity } from '../functions/database.js'
+import { ConversationQueueFullError, runInConversationQueue } from '../services/messageQueueService.js'
 import {
   getMessageTimestamp,
   isGreetingOrStartMessage,
@@ -84,22 +85,37 @@ export const messageHandler = async (
 ) => {
   const dependencies = { ...defaultDependencies, ...dependencyOverrides }
 
-  await processMessageBatch(
-    m.messages,
-    async msg => {
-      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
-        await handleMessage(sock, msg, options, dependencies)
-      })
-    },
-    async (error, msg) => {
-      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
-        dependencies.writeErrorLog('UNKNOWN_ERROR', 'Erro isolado ao processar item do lote de mensagens', error, {
-          user: msg.key?.remoteJid || undefined,
-          resultCode: 500
+  // Enfileirar o lote inteiro antes de aguardar I/O preserva a ordem entre upserts.
+  await Promise.all(m.messages.map(async msg => {
+    const processingStartedAt = Date.now()
+    let processingSucceeded = true
+    try {
+      await runInConversationQueue(msg.key?.remoteJid || '', async () => {
+        await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+          await handleMessage(sock, msg, options, dependencies)
         })
       })
+    } catch (error) {
+      processingSucceeded = false
+      const overloaded = error instanceof ConversationQueueFullError
+      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+        dependencies.writeErrorLog(
+          overloaded ? 'RATE_LIMITED' : 'UNKNOWN_ERROR',
+          overloaded ? 'Fila de conversa atingiu o limite de espera' : 'Erro isolado ao processar item do lote de mensagens',
+          overloaded ? new Error('Fila de conversa temporariamente cheia') : error,
+          {
+            user: msg.key?.remoteJid || undefined,
+            resultCode: overloaded ? 429 : 500
+          }
+        )
+      })
+    } finally {
+      dependencies.writeBotLog('MESSAGE_PROCESSED', 'Ciclo de mensagem concluído', {
+        durationMs: Math.max(0, Date.now() - processingStartedAt),
+        success: processingSucceeded
+      })
     }
-  )
+  }))
 }
 
 async function handleMessage(
@@ -208,6 +224,13 @@ async function handleMessage(
   const mainOptionByIntent = { documents: '2', course: '3', support: '7' } as const
   if (intent && intent in mainOptionByIntent) {
     await dependencies.handleMainOption(sock, userJid, userName, mainOptionByIntent[intent as keyof typeof mainOptionByIntent], currentState)
+    return
+  }
+
+  if (stateLookup.requiresMenuConfirmation) {
+    await sock.sendMessage(userJid, { text: 'Vamos confirmar seu atendimento após a retomada. Escolha novamente no menu a seguir.' })
+    await dependencies.sendMain(sock, userJid)
+    await dependencies.updateState(userJid, 'main')
     return
   }
 

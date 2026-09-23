@@ -4,7 +4,7 @@ import * as path from 'path'
 import { WASocket } from 'baileys'
 import { getActiveDocs } from '../functions/database.js'
 import { config } from '../config.js'
-import { createDocsMenu, fallbackDocuments } from '../menus/docsMenu.js'
+import { createDocsMenu } from '../menus/docsMenu.js'
 import { formatMenu } from './menuService.js'
 import { debugLog, errorLog } from './logService.js'
 import { BotResultCode, BotResultCodeValue } from '../types/resultCode.js'
@@ -14,6 +14,15 @@ export interface ActiveDocument {
   label: string
   path: string
   summary?: string
+}
+
+export class DocumentCatalogUnavailableError extends Error {
+  readonly code = BotResultCode.SERVICE_UNAVAILABLE
+
+  constructor() {
+    super('Catálogo de documentos temporariamente indisponível')
+    this.name = 'DocumentCatalogUnavailableError'
+  }
 }
 
 export interface DocumentSendResult {
@@ -84,15 +93,6 @@ async function getDocumentsForHealthcheck(): Promise<ActiveDocument[]> {
   }))
 }
 
-function mapFallbackDocuments(): ActiveDocument[] {
-  return fallbackDocuments.map(doc => ({
-    key: doc.key,
-    label: doc.label,
-    path: doc.path,
-    summary: doc.summary
-  }))
-}
-
 function getDocumentSummary(label: string, documentPath: string) {
   const normalized = `${label} ${documentPath}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 
@@ -121,13 +121,12 @@ function getDocumentSummary(label: string, documentPath: string) {
 
 /**
  * Carrega documentos ativos do banco para montar o menu dinamicamente.
- * Se o banco estiver indisponível ou vazio, usa uma lista local de fallback
- * para manter o atendimento básico funcionando.
+ * O banco é a fonte autoritativa: vazio significa nenhum documento ativo.
+ * Uma falha é distinta de vazio e nunca reativa PDFs da lista local.
  */
-export async function getAvailableDocuments(categoryCode = 'drca'): Promise<ActiveDocument[]> {
+export async function getAvailableDocuments(categoryCode = 'drca', readActiveDocs: typeof getActiveDocs = getActiveDocs): Promise<ActiveDocument[]> {
   try {
-    const docs = await getActiveDocs(categoryCode)
-    if (!docs.length) return categoryCode === 'drca' ? mapFallbackDocuments() : []
+    const docs = await readActiveDocs(categoryCode, { throwOnError: true })
 
     return docs.map((doc, index) => ({
       key: String(index + 1),
@@ -135,9 +134,10 @@ export async function getAvailableDocuments(categoryCode = 'drca'): Promise<Acti
       path: doc.path,
       summary: doc.summary || getDocumentSummary(doc.name, doc.path)
     }))
-  } catch (error) {
-    errorLog('DATABASE_ERROR', 'Erro ao carregar documentos ativos. Usando lista local de fallback', error)
-    return categoryCode === 'drca' ? mapFallbackDocuments() : []
+  } catch {
+    const unavailable = new DocumentCatalogUnavailableError()
+    errorLog('DATABASE_ERROR', unavailable.message, unavailable, { resultCode: unavailable.code })
+    throw unavailable
   }
 }
 
