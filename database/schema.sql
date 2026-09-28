@@ -4,13 +4,9 @@
 -- Banco sugerido: MySQL 8+
 -- =========================================================
 
--- Cria o banco caso ele ainda não exista.
--- Altere o nome do banco se o seu .env estiver usando outro DB_NAME.
-CREATE DATABASE IF NOT EXISTS firabot
-  CHARACTER SET utf8mb4
-  COLLATE utf8mb4_unicode_ci;
-
-USE firabot;
+-- O banco ativo é criado pelo MySQL Compose a partir de MYSQL_DATABASE.
+-- Este arquivo deve ser aplicado dentro do banco selecionado, sem fixar nome
+-- próprio, para manter schema, migrations e aplicação no mesmo destino.
 
 -- Helper idempotente para reaplicar o schema em bancos locais já existentes.
 -- MySQL não aceita CREATE INDEX IF NOT EXISTS em todas as versões 8.x.

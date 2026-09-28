@@ -2,7 +2,13 @@ import { WASocket, proto } from 'baileys'
 import { processCommand } from '../handlers/commandHandler.js'
 import { processMenuOption } from '../handlers/menuOptionHandler.js'
 import { config } from '../config.js'
-import { cancelPendingFollowUp, sendEndFlow, sendMainMenu, sendStartFlow, sendUnknownMessage } from '../flows/conversationFlow.js'
+import {
+  cancelPendingFollowUp,
+  sendEndFlow,
+  sendMainMenu,
+  sendStartFlow,
+  sendUnknownMessage
+} from '../flows/conversationFlow.js'
 import { processMainOption } from '../flows/mainMenuFlow.js'
 import { handleSupportMessage } from '../flows/supportFlow.js'
 import { canSafelyRouteNumericInput, getCurrentUserStateResult, updateUserState } from '../services/userStateService.js'
@@ -13,7 +19,7 @@ import { isNumericOption } from '../services/menuService.js'
 import { shouldCaptureSupportMessage } from '../services/menuRoutingService.js'
 import { shouldProcessMessageId } from '../services/messageBatchService.js'
 import { detectConversationIntent } from '../services/conversationIntentService.js'
-import { getMessageJidCandidates } from '../services/userIdentityService.js'
+import { getConversationQueueKey, getMessageJidCandidates } from '../services/userIdentityService.js'
 import { upsertUserIdentity } from '../functions/database.js'
 import { ConversationQueueFullError, runInConversationQueue } from '../services/messageQueueService.js'
 import {
@@ -86,36 +92,40 @@ export const messageHandler = async (
   const dependencies = { ...defaultDependencies, ...dependencyOverrides }
 
   // Enfileirar o lote inteiro antes de aguardar I/O preserva a ordem entre upserts.
-  await Promise.all(m.messages.map(async msg => {
-    const processingStartedAt = Date.now()
-    let processingSucceeded = true
-    try {
-      await runInConversationQueue(msg.key?.remoteJid || '', async () => {
-        await dependencies.withLogContext(msg.key?.id || undefined, async () => {
-          await handleMessage(sock, msg, options, dependencies)
+  await Promise.all(
+    m.messages.map(async (msg) => {
+      const processingStartedAt = Date.now()
+      let processingSucceeded = true
+      try {
+        await runInConversationQueue(getConversationQueueKey(msg), async () => {
+          await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+            await handleMessage(sock, msg, options, dependencies)
+          })
         })
-      })
-    } catch (error) {
-      processingSucceeded = false
-      const overloaded = error instanceof ConversationQueueFullError
-      await dependencies.withLogContext(msg.key?.id || undefined, async () => {
-        dependencies.writeErrorLog(
-          overloaded ? 'RATE_LIMITED' : 'UNKNOWN_ERROR',
-          overloaded ? 'Fila de conversa atingiu o limite de espera' : 'Erro isolado ao processar item do lote de mensagens',
-          overloaded ? new Error('Fila de conversa temporariamente cheia') : error,
-          {
-            user: msg.key?.remoteJid || undefined,
-            resultCode: overloaded ? 429 : 500
-          }
-        )
-      })
-    } finally {
-      dependencies.writeBotLog('MESSAGE_PROCESSED', 'Ciclo de mensagem concluído', {
-        durationMs: Math.max(0, Date.now() - processingStartedAt),
-        success: processingSucceeded
-      })
-    }
-  }))
+      } catch (error) {
+        processingSucceeded = false
+        const overloaded = error instanceof ConversationQueueFullError
+        await dependencies.withLogContext(msg.key?.id || undefined, async () => {
+          dependencies.writeErrorLog(
+            overloaded ? 'RATE_LIMITED' : 'UNKNOWN_ERROR',
+            overloaded
+              ? 'Fila de conversa atingiu o limite de espera'
+              : 'Erro isolado ao processar item do lote de mensagens',
+            overloaded ? new Error('Fila de conversa temporariamente cheia') : error,
+            {
+              user: msg.key?.remoteJid || undefined,
+              resultCode: overloaded ? 429 : 500
+            }
+          )
+        })
+      } finally {
+        dependencies.writeBotLog('MESSAGE_PROCESSED', 'Ciclo de mensagem concluído', {
+          durationMs: Math.max(0, Date.now() - processingStartedAt),
+          success: processingSucceeded
+        })
+      }
+    })
+  )
 }
 
 async function handleMessage(
@@ -130,19 +140,29 @@ async function handleMessage(
   if (!msg.message || remoteJid === 'status@broadcast') return
 
   if (msg.key?.fromMe) {
-    dependencies.writeDebugLog('Mensagem ignorada por ter sido enviada pelo próprio bot', { eventType: 'MESSAGE_IGNORED_SELF' })
+    dependencies.writeDebugLog('Mensagem ignorada por ter sido enviada pelo próprio bot', {
+      eventType: 'MESSAGE_IGNORED_SELF'
+    })
     return
   }
 
   const ignoreGroups = options.ignoreGroups ?? config.ignoreGroups
   if (ignoreGroups && remoteJid.endsWith('@g.us')) {
-    dependencies.writeDebugLog('Mensagem de grupo ignorada pela configuração atual', { eventType: 'MESSAGE_IGNORED_GROUP', user: remoteJid })
+    dependencies.writeDebugLog('Mensagem de grupo ignorada pela configuração atual', {
+      eventType: 'MESSAGE_IGNORED_GROUP',
+      user: remoteJid
+    })
     return
   }
 
   const timestamp = getMessageTimestamp(msg)
   if (isMessageFromBeforeStart(timestamp, options.startedAt)) {
-    dependencies.writeDebugLog('Mensagem antiga ignorada', { eventType: 'MESSAGE_IGNORED_OLD', user: remoteJid, timestamp, startedAt: options.startedAt })
+    dependencies.writeDebugLog('Mensagem antiga ignorada', {
+      eventType: 'MESSAGE_IGNORED_OLD',
+      user: remoteJid,
+      timestamp,
+      startedAt: options.startedAt
+    })
     return
   }
 
@@ -194,7 +214,11 @@ async function handleMessage(
   }
 
   if (!dependencies.canRespond(`${userJid}:${body.toLowerCase()}`)) {
-    dependencies.writeDebugLog('Resposta ignorada por proteção anti-spam', { eventType: 'RATE_LIMITED', user: userJid, messageLength: body.length })
+    dependencies.writeDebugLog('Resposta ignorada por proteção anti-spam', {
+      eventType: 'RATE_LIMITED',
+      user: userJid,
+      messageLength: body.length
+    })
     return
   }
 
@@ -212,23 +236,38 @@ async function handleMessage(
   if (intent === 'main') {
     await dependencies.sendMain(sock, userJid)
     const stateAfter = await dependencies.updateState(userJid, 'main')
-    await dependencies.writeUserLog(userJid, userName, 'Retorno ao menu principal por intenção', currentState, 'USER_STATE_CHANGED', {
-      stateBefore: currentState,
-      stateAfter,
-      menu: 'menu principal',
-      success: true
-    })
+    await dependencies.writeUserLog(
+      userJid,
+      userName,
+      'Retorno ao menu principal por intenção',
+      currentState,
+      'USER_STATE_CHANGED',
+      {
+        stateBefore: currentState,
+        stateAfter,
+        menu: 'menu principal',
+        success: true
+      }
+    )
     return
   }
 
   const mainOptionByIntent = { documents: '2', course: '3', support: '7' } as const
   if (intent && intent in mainOptionByIntent) {
-    await dependencies.handleMainOption(sock, userJid, userName, mainOptionByIntent[intent as keyof typeof mainOptionByIntent], currentState)
+    await dependencies.handleMainOption(
+      sock,
+      userJid,
+      userName,
+      mainOptionByIntent[intent as keyof typeof mainOptionByIntent],
+      currentState
+    )
     return
   }
 
   if (stateLookup.requiresMenuConfirmation) {
-    await sock.sendMessage(userJid, { text: 'Vamos confirmar seu atendimento após a retomada. Escolha novamente no menu a seguir.' })
+    await sock.sendMessage(userJid, {
+      text: 'Vamos confirmar seu atendimento após a retomada. Escolha novamente no menu a seguir.'
+    })
     await dependencies.sendMain(sock, userJid)
     await dependencies.updateState(userJid, 'main')
     return
@@ -245,12 +284,19 @@ async function handleMessage(
       resultCode: 503,
       correlationId: msg.key?.id || undefined
     })
-    await dependencies.writeUserLog(userJid, userName, 'Opção numérica bloqueada por indisponibilidade do estado', currentState, 'DATABASE_UNAVAILABLE', {
-      stateBefore: currentState,
-      success: false,
-      resultCode: 503,
-      errorMessage: 'Estado indisponível para roteamento numérico'
-    })
+    await dependencies.writeUserLog(
+      userJid,
+      userName,
+      'Opção numérica bloqueada por indisponibilidade do estado',
+      currentState,
+      'DATABASE_UNAVAILABLE',
+      {
+        stateBefore: currentState,
+        success: false,
+        resultCode: 503,
+        errorMessage: 'Estado indisponível para roteamento numérico'
+      }
+    )
     return
   }
 
@@ -265,5 +311,12 @@ async function handleMessage(
   }
 
   await dependencies.sendUnknown(sock, userJid, currentState)
-  await dependencies.writeUserLog(userJid, userName, `Mensagem não compreendida (${body.length} caracteres)`, currentState, 'INVALID_OPTION', { stateBefore: currentState, success: false })
+  await dependencies.writeUserLog(
+    userJid,
+    userName,
+    `Mensagem não compreendida (${body.length} caracteres)`,
+    currentState,
+    'INVALID_OPTION',
+    { stateBefore: currentState, success: false }
+  )
 }

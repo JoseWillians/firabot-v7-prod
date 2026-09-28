@@ -9,7 +9,11 @@ import {
   isPrefixedCommand
 } from '../dist/services/messageGuardService.js'
 import { getMenuRouteForOption, shouldCaptureSupportMessage } from '../dist/services/menuRoutingService.js'
-import { canSafelyRouteNumericInput, isStateExpiredWithTtl, normalizeUserState } from '../dist/services/userStateService.js'
+import {
+  canSafelyRouteNumericInput,
+  isStateExpiredWithTtl,
+  normalizeUserState
+} from '../dist/services/userStateService.js'
 import {
   getAdminCommandDenial,
   getValidAdminNumbers,
@@ -21,7 +25,11 @@ import {
 import { botLog, maskPhone, resolveEventResultCode } from '../dist/services/logService.js'
 import { BotResultCode } from '../dist/types/resultCode.js'
 import { formatCourseMenu, formatMainMenu, formatMenu } from '../dist/services/menuService.js'
-import { formatDocumentSuccessMessage, resolveSafeDocumentPath, sendDocument } from '../dist/services/documentService.js'
+import {
+  formatDocumentSuccessMessage,
+  resolveSafeDocumentPath,
+  sendDocument
+} from '../dist/services/documentService.js'
 import { extractMessageText } from '../dist/services/messageTextService.js'
 import { docsCategoryMenu } from '../dist/menus/docsMenu.js'
 import { getPpcCategoryCodeByState } from '../dist/menus/courseMenu.js'
@@ -30,7 +38,11 @@ import { formatContextualFollowUpMessage, getRemainingMenuOptions } from '../dis
 import { cancelPendingFollowUp, sendFollowUp, sendUnknownMessage } from '../dist/flows/conversationFlow.js'
 import { formatSupportAcknowledgement, formatSupportPrompt, sanitizeSupportMessage } from '../dist/flows/supportFlow.js'
 import { detectConversationIntent } from '../dist/services/conversationIntentService.js'
-import { getMessageJidCandidates, getPhoneE164FromJids } from '../dist/services/userIdentityService.js'
+import {
+  getConversationQueueKey,
+  getMessageJidCandidates,
+  getPhoneE164FromJids
+} from '../dist/services/userIdentityService.js'
 import {
   clearProcessedMessageIds,
   processMessageBatch,
@@ -50,11 +62,7 @@ import { processCommand } from '../dist/handlers/commandHandler.js'
 import { processMenuOption } from '../dist/handlers/menuOptionHandler.js'
 import { messageHandler } from '../dist/middlewares/messageHandler.js'
 import { processMainOption } from '../dist/flows/mainMenuFlow.js'
-import {
-  processCaeDocsOption,
-  processDocsCategoryOption,
-  processDrcaDocsOption
-} from '../dist/flows/documentsFlow.js'
+import { processCaeDocsOption, processDocsCategoryOption, processDrcaDocsOption } from '../dist/flows/documentsFlow.js'
 import { processCourseSelectionOption, processPpcDocumentOption } from '../dist/flows/courseFlow.js'
 import { sendDocumentWithTracking } from '../dist/flows/documentSendFlow.js'
 import { runConnectionLifecycleTests } from './connection-lifecycle.mjs'
@@ -93,10 +101,7 @@ async function withTemporaryDocumentSandbox(testFn) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'firabot-document-service-'))
   const documentsDir = path.join(root, 'documents')
   const outsideDir = path.join(root, 'outside')
-  await Promise.all([
-    mkdir(documentsDir, { recursive: true }),
-    mkdir(outsideDir, { recursive: true })
-  ])
+  await Promise.all([mkdir(documentsDir, { recursive: true }), mkdir(outsideDir, { recursive: true })])
 
   try {
     return await testFn({ root, documentsDir, outsideDir })
@@ -127,8 +132,8 @@ async function withCapturedConsole(testFn) {
   const originalLog = console.log
   const originalError = console.error
   const outputs = []
-  console.log = value => outputs.push(String(value))
-  console.error = value => outputs.push(String(value))
+  console.log = (value) => outputs.push(String(value))
+  console.error = (value) => outputs.push(String(value))
 
   try {
     return { result: await testFn(), output: outputs.join('\n') }
@@ -215,7 +220,10 @@ function createMessageDependencies(overrides = {}) {
 
 function createMenuDependencies(overrides = {}) {
   const events = []
-  const record = type => async (...args) => events.push({ type, args })
+  const record =
+    (type) =>
+    async (...args) =>
+      events.push({ type, args })
   return {
     events,
     dependencies: {
@@ -278,7 +286,7 @@ function createDocumentsFlowDependencies(overrides = {}) {
     drcaDocument,
     caeDocument,
     dependencies: {
-      listDocuments: async category => category === 'cae' ? [caeDocument] : [drcaDocument],
+      listDocuments: async (category) => (category === 'cae' ? [caeDocument] : [drcaDocument]),
       setState: async (_jid, state) => {
         events.push({ type: 'set-state', state })
         return state
@@ -367,7 +375,7 @@ runTest('agendador mantém timer único e permite cancelar reconexão pendente',
       scheduled.push(handle)
       return handle
     },
-    clearTimer: handle => cleared.push(handle)
+    clearTimer: (handle) => cleared.push(handle)
   })
 
   scheduler.schedule()
@@ -390,10 +398,12 @@ await runAsyncTest('comandos ping, ifma e oi enviam respostas ao remetente', asy
   await ifmaCommand.execute(ifma.sock, msg)
   await oiCommand.execute(oi.sock, msg)
 
-  assert.deepEqual(ping.messages, [{
-    jid: 'user@s.whatsapp.net',
-    content: { text: 'O Firabot está ativo!' }
-  }])
+  assert.deepEqual(ping.messages, [
+    {
+      jid: 'user@s.whatsapp.net',
+      content: { text: 'O Firabot está ativo!' }
+    }
+  ])
   assert.equal(ifma.messages.length, 1)
   assert.equal(ifma.messages[0].jid, 'user@s.whatsapp.net')
   assert.match(ifma.messages[0].content.text, /INFORMAÇÕES IFMA/)
@@ -406,14 +416,19 @@ await runAsyncTest('dispatcher encaminha encerramento e aliases de início sem c
   const { sock } = createFakeSocket()
   let commandLookups = 0
   const fixture = createCommandDependencies({
-    ensureCommandsReady: async () => { commandLookups += 1 }
+    ensureCommandsReady: async () => {
+      commandLookups += 1
+    }
   })
   const msg = { key: { remoteJid: 'user@s.whatsapp.net' } }
 
   await processCommand(sock, msg, '!encerrar', 'user@s.whatsapp.net', 'Aluno', 'docs', fixture.dependencies)
   await processCommand(sock, msg, '!menu', 'user@s.whatsapp.net', 'Aluno', 'main', fixture.dependencies)
 
-  assert.deepEqual(fixture.events.map(event => event.type), ['end', 'start'])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['end', 'start']
+  )
   assert.equal(fixture.events[1].args[3], 'Início: !menu')
   assert.equal(commandLookups, 0)
 })
@@ -422,11 +437,16 @@ await runAsyncTest('dispatcher executa comando público com argumentos e registr
   const { sock } = createFakeSocket()
   const receivedArgs = []
   const fixture = createCommandDependencies({
-    commandRegistry: new Map([['eco', {
-      name: 'eco',
-      description: 'Eco de teste',
-      execute: async (_sock, _msg, args) => receivedArgs.push(...args)
-    }]])
+    commandRegistry: new Map([
+      [
+        'eco',
+        {
+          name: 'eco',
+          description: 'Eco de teste',
+          execute: async (_sock, _msg, args) => receivedArgs.push(...args)
+        }
+      ]
+    ])
   })
 
   await processCommand(
@@ -451,12 +471,19 @@ await runAsyncTest('dispatcher bloqueia comando administrativo com 403 ou 503', 
     const { sock, messages } = createFakeSocket()
     let executions = 0
     const fixture = createCommandDependencies({
-      commandRegistry: new Map([['restrito', {
-        name: 'restrito',
-        description: 'Restrito de teste',
-        adminOnly: true,
-        execute: async () => { executions += 1 }
-      }]]),
+      commandRegistry: new Map([
+        [
+          'restrito',
+          {
+            name: 'restrito',
+            description: 'Restrito de teste',
+            adminOnly: true,
+            execute: async () => {
+              executions += 1
+            }
+          }
+        ]
+      ]),
       authorizeAdmin: async () => ({
         authorized: false,
         source: 'none',
@@ -478,19 +505,30 @@ await runAsyncTest('dispatcher bloqueia comando administrativo com 403 ou 503', 
 
     assert.equal(executions, 0)
     assert.equal(messages[0].content.text, denial.message)
-    assert.equal(fixture.events.some(event => event.type === 'technical-log'), true)
-    assert.equal(fixture.events.some(event => event.type === 'user-log'), true)
+    assert.equal(
+      fixture.events.some((event) => event.type === 'technical-log'),
+      true
+    )
+    assert.equal(
+      fixture.events.some((event) => event.type === 'user-log'),
+      true
+    )
   }
 })
 
 await runAsyncTest('dispatcher autoriza comando administrativo e rejeita comando desconhecido', async () => {
   const authorized = createCommandDependencies({
-    commandRegistry: new Map([['restrito', {
-      name: 'restrito',
-      description: 'Restrito de teste',
-      adminOnly: true,
-      execute: async () => authorized.events.push({ type: 'execute' })
-    }]])
+    commandRegistry: new Map([
+      [
+        'restrito',
+        {
+          name: 'restrito',
+          description: 'Restrito de teste',
+          adminOnly: true,
+          execute: async () => authorized.events.push({ type: 'execute' })
+        }
+      ]
+    ])
   })
   const authorizedSocket = createFakeSocket()
 
@@ -504,7 +542,10 @@ await runAsyncTest('dispatcher autoriza comando administrativo e rejeita comando
     authorized.dependencies
   )
 
-  assert.deepEqual(authorized.events.map(event => event.type), ['execute', 'technical-log', 'user-log'])
+  assert.deepEqual(
+    authorized.events.map((event) => event.type),
+    ['execute', 'technical-log', 'user-log']
+  )
 
   const unknown = createCommandDependencies()
   const unknownSocket = createFakeSocket()
@@ -529,58 +570,91 @@ await runAsyncTest('message handler permite grupo quando a opção da chamada li
     key: { id: 'group-allowed', remoteJid: 'group@g.us', fromMe: false }
   })
 
-  await messageHandler(sock, { messages: [groupMessage] }, {
-    startedAt: 100,
-    ignoreGroups: false,
-    messageDedupTtlMs: 10_000
-  }, fixture.dependencies)
+  await messageHandler(
+    sock,
+    { messages: [groupMessage] },
+    {
+      startedAt: 100,
+      ignoreGroups: false,
+      messageDedupTtlMs: 10_000
+    },
+    fixture.dependencies
+  )
 
-  assert.equal(fixture.events.some(event => event.type === 'upsert'), true)
-  assert.equal(fixture.events.some(event => event.type === 'unknown'), true)
+  assert.equal(
+    fixture.events.some((event) => event.type === 'upsert'),
+    true
+  )
+  assert.equal(
+    fixture.events.some((event) => event.type === 'unknown'),
+    true
+  )
 })
 
-await runAsyncTest('message handler ignora remetente próprio, grupo bloqueado, mensagem antiga e duplicada', async () => {
-  const scenarios = [
-    {
-      message: createMessage({ key: { id: 'self', remoteJid: 'user@s.whatsapp.net', fromMe: true } }),
-      options: { startedAt: 100, ignoreGroups: false },
-      eventType: 'MESSAGE_IGNORED_SELF'
-    },
-    {
-      message: createMessage({ key: { id: 'group', remoteJid: 'group@g.us', fromMe: false } }),
-      options: { startedAt: 100, ignoreGroups: true },
-      eventType: 'MESSAGE_IGNORED_GROUP'
-    },
-    {
-      message: createMessage({ key: { id: 'old', remoteJid: 'user@s.whatsapp.net', fromMe: false }, messageTimestamp: 1 }),
-      options: { startedAt: 100, ignoreGroups: false },
-      eventType: 'MESSAGE_IGNORED_OLD'
+await runAsyncTest(
+  'message handler ignora remetente próprio, grupo bloqueado, mensagem antiga e duplicada',
+  async () => {
+    const scenarios = [
+      {
+        message: createMessage({ key: { id: 'self', remoteJid: 'user@s.whatsapp.net', fromMe: true } }),
+        options: { startedAt: 100, ignoreGroups: false },
+        eventType: 'MESSAGE_IGNORED_SELF'
+      },
+      {
+        message: createMessage({ key: { id: 'group', remoteJid: 'group@g.us', fromMe: false } }),
+        options: { startedAt: 100, ignoreGroups: true },
+        eventType: 'MESSAGE_IGNORED_GROUP'
+      },
+      {
+        message: createMessage({
+          key: { id: 'old', remoteJid: 'user@s.whatsapp.net', fromMe: false },
+          messageTimestamp: 1
+        }),
+        options: { startedAt: 100, ignoreGroups: false },
+        eventType: 'MESSAGE_IGNORED_OLD'
+      }
+    ]
+
+    for (const scenario of scenarios) {
+      const fixture = createMessageDependencies()
+      const { sock } = createFakeSocket()
+      await messageHandler(sock, { messages: [scenario.message] }, scenario.options, fixture.dependencies)
+
+      const debugEvent = fixture.events.find((event) => event.type === 'debug-log')
+      assert.equal(debugEvent.args[1].eventType, scenario.eventType)
+      assert.equal(
+        fixture.events.some((event) => event.type === 'upsert'),
+        false
+      )
     }
-  ]
 
-  for (const scenario of scenarios) {
-    const fixture = createMessageDependencies()
-    const { sock } = createFakeSocket()
-    await messageHandler(sock, { messages: [scenario.message] }, scenario.options, fixture.dependencies)
-
-    const debugEvent = fixture.events.find(event => event.type === 'debug-log')
-    assert.equal(debugEvent.args[1].eventType, scenario.eventType)
-    assert.equal(fixture.events.some(event => event.type === 'upsert'), false)
+    const duplicate = createMessageDependencies({ shouldProcessId: () => false })
+    await messageHandler(
+      createFakeSocket().sock,
+      { messages: [createMessage()] },
+      {
+        startedAt: 100,
+        ignoreGroups: false
+      },
+      duplicate.dependencies
+    )
+    assert.equal(
+      duplicate.events.find((event) => event.type === 'debug-log').args[1].eventType,
+      'MESSAGE_IGNORED_DUPLICATE'
+    )
+    assert.equal(
+      duplicate.events.some((event) => event.type === 'upsert'),
+      false
+    )
   }
-
-  const duplicate = createMessageDependencies({ shouldProcessId: () => false })
-  await messageHandler(createFakeSocket().sock, { messages: [createMessage()] }, {
-    startedAt: 100,
-    ignoreGroups: false
-  }, duplicate.dependencies)
-  assert.equal(duplicate.events.find(event => event.type === 'debug-log').args[1].eventType, 'MESSAGE_IGNORED_DUPLICATE')
-  assert.equal(duplicate.events.some(event => event.type === 'upsert'), false)
-})
+)
 
 await runAsyncTest('message handler continua após falha de identidade e isola falha entre itens do lote', async () => {
   let stateCalls = 0
   const fixture = createMessageDependencies({
-    upsertIdentity: async () => { throw new Error('falha controlada de identidade') },
+    upsertIdentity: async () => {
+      throw new Error('falha controlada de identidade')
+    },
     getUserState: async () => {
       stateCalls += 1
       if (stateCalls === 1) throw new Error('falha controlada de estado')
@@ -588,15 +662,23 @@ await runAsyncTest('message handler continua após falha de identidade e isola f
     }
   })
 
-  await messageHandler(createFakeSocket().sock, {
-    messages: [
-      createMessage({ key: { id: 'state-error', remoteJid: 'first@s.whatsapp.net', fromMe: false } }),
-      createMessage({ key: { id: 'state-ok', remoteJid: 'second@s.whatsapp.net', fromMe: false } })
-    ]
-  }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+  await messageHandler(
+    createFakeSocket().sock,
+    {
+      messages: [
+        createMessage({ key: { id: 'state-error', remoteJid: 'first@s.whatsapp.net', fromMe: false } }),
+        createMessage({ key: { id: 'state-ok', remoteJid: 'second@s.whatsapp.net', fromMe: false } })
+      ]
+    },
+    { startedAt: 100, ignoreGroups: false },
+    fixture.dependencies
+  )
 
-  assert.equal(fixture.events.filter(event => event.type === 'error-log').length, 3)
-  assert.equal(fixture.events.some(event => event.type === 'unknown'), true)
+  assert.equal(fixture.events.filter((event) => event.type === 'error-log').length, 3)
+  assert.equal(
+    fixture.events.some((event) => event.type === 'unknown'),
+    true
+  )
 })
 
 await runAsyncTest('message handler roteia comandos, conversa, suporte, números e fallback', async () => {
@@ -623,26 +705,40 @@ await runAsyncTest('message handler roteia comandos, conversa, suporte, números
       })
     })
     const { sock } = createFakeSocket()
-    await messageHandler(sock, {
-      messages: [createMessage({
-        key: { id: `route-${index}`, remoteJid: 'user@s.whatsapp.net', fromMe: false },
-        message: { conversation: scenario.body }
-      })]
-    }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+    await messageHandler(
+      sock,
+      {
+        messages: [
+          createMessage({
+            key: { id: `route-${index}`, remoteJid: 'user@s.whatsapp.net', fromMe: false },
+            message: { conversation: scenario.body }
+          })
+        ]
+      },
+      { startedAt: 100, ignoreGroups: false },
+      fixture.dependencies
+    )
 
-    const routeEvent = fixture.events.find(event => event.type === scenario.expected)
+    const routeEvent = fixture.events.find((event) => event.type === scenario.expected)
     assert.ok(routeEvent, `rota ausente para ${scenario.body}`)
     if (scenario.option) assert.equal(routeEvent.args[3], scenario.option)
-    const metricsEvent = fixture.events.find(event => event.type === 'bot-log' && event.args[0] === 'MESSAGE_PROCESSED')
+    const metricsEvent = fixture.events.find(
+      (event) => event.type === 'bot-log' && event.args[0] === 'MESSAGE_PROCESSED'
+    )
     assert.equal(typeof metricsEvent?.args[2]?.durationMs, 'number')
     assert.equal(metricsEvent?.args[2]?.success, true)
   }
 
   const limited = createMessageDependencies({ canRespond: () => false })
-  await messageHandler(createFakeSocket().sock, {
-    messages: [createMessage({ message: { conversation: 'texto limitado' } })]
-  }, { startedAt: 100, ignoreGroups: false }, limited.dependencies)
-  assert.equal(limited.events.find(event => event.type === 'debug-log').args[1].eventType, 'RATE_LIMITED')
+  await messageHandler(
+    createFakeSocket().sock,
+    {
+      messages: [createMessage({ message: { conversation: 'texto limitado' } })]
+    },
+    { startedAt: 100, ignoreGroups: false },
+    limited.dependencies
+  )
+  assert.equal(limited.events.find((event) => event.type === 'debug-log').args[1].eventType, 'RATE_LIMITED')
 })
 
 await runAsyncTest('message handler bloqueia número quando o estado do banco não é confiável', async () => {
@@ -651,24 +747,38 @@ await runAsyncTest('message handler bloqueia número quando o estado do banco n�
   })
   const { sock, messages } = createFakeSocket()
 
-  await messageHandler(sock, {
-    messages: [createMessage({ message: { conversation: '2' } })]
-  }, { startedAt: 100, ignoreGroups: false }, fixture.dependencies)
+  await messageHandler(
+    sock,
+    {
+      messages: [createMessage({ message: { conversation: '2' } })]
+    },
+    { startedAt: 100, ignoreGroups: false },
+    fixture.dependencies
+  )
 
   assert.match(messages[0].content.text, /503/)
-  assert.equal(fixture.events.some(event => event.type === 'menu-option'), false)
-  assert.equal(fixture.events.filter(event => event.type === 'user-log').length, 1)
+  assert.equal(
+    fixture.events.some((event) => event.type === 'menu-option'),
+    false
+  )
+  assert.equal(fixture.events.filter((event) => event.type === 'user-log').length, 1)
 })
 
 await runAsyncTest('menu option handler cobre retorno, estado informativo e todas as rotas numéricas', async () => {
   const { sock } = createFakeSocket()
   const back = createMenuDependencies()
   await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '0', 'docs', back.dependencies)
-  assert.deepEqual(back.events.map(event => event.type), ['main', 'update-state', 'bot-log', 'user-log'])
+  assert.deepEqual(
+    back.events.map((event) => event.type),
+    ['main', 'update-state', 'bot-log', 'user-log']
+  )
 
   const informational = createMenuDependencies()
   await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'biblioteca', informational.dependencies)
-  assert.deepEqual(informational.events.map(event => event.type), ['unknown', 'user-log'])
+  assert.deepEqual(
+    informational.events.map((event) => event.type),
+    ['unknown', 'user-log']
+  )
 
   const routes = [
     { state: 'docs', expected: 'docs' },
@@ -682,7 +792,10 @@ await runAsyncTest('menu option handler cobre retorno, estado informativo e toda
   for (const route of routes) {
     const fixture = createMenuDependencies()
     await processMenuOption(sock, 'user@s.whatsapp.net', 'Aluno', '1', route.state, fixture.dependencies)
-    assert.deepEqual(fixture.events.map(event => event.type), [route.expected])
+    assert.deepEqual(
+      fixture.events.map((event) => event.type),
+      [route.expected]
+    )
   }
 })
 
@@ -694,16 +807,12 @@ await runAsyncTest('fluxo principal permite isolar suporte e estado sem acessar 
     }
   }
 
-  await processMainOption(
-    forbiddenSocket,
-    'user@s.whatsapp.net',
-    'Aluno',
-    '7',
-    'main',
-    fixture.dependencies
-  )
+  await processMainOption(forbiddenSocket, 'user@s.whatsapp.net', 'Aluno', '7', 'main', fixture.dependencies)
 
-  assert.deepEqual(fixture.events.map(event => event.type), ['support', 'set-state'])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['support', 'set-state']
+  )
   assert.equal(fixture.events[1].state, 'suporte')
 })
 
@@ -724,11 +833,14 @@ await runAsyncTest('fluxo principal cobre opções 1 a 7 com menus e transiçõe
 
     await processMainOption(sock, 'user@s.whatsapp.net', 'Aluno', scenario.option, 'main', fixture.dependencies)
 
-    assert.deepEqual(fixture.events.map(event => event.type), scenario.events)
-    assert.equal(fixture.events.find(event => event.type === 'set-state').state, scenario.state)
+    assert.deepEqual(
+      fixture.events.map((event) => event.type),
+      scenario.events
+    )
+    assert.equal(fixture.events.find((event) => event.type === 'set-state').state, scenario.state)
     if (scenario.text) assert.match(messages[0].content.text, scenario.text)
 
-    const followUp = fixture.events.find(event => event.type === 'follow-up')
+    const followUp = fixture.events.find((event) => event.type === 'follow-up')
     if (['4', '5'].includes(scenario.option)) assert.equal(followUp.args[2], 0)
   }
 })
@@ -740,13 +852,18 @@ await runAsyncTest('fluxo principal rejeita opção inválida e não altera esta
   await processMainOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'main', fixture.dependencies)
 
   assert.match(messages[0].content.text, /1 - Biblioteca/)
-  assert.deepEqual(fixture.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['user-log']
+  )
   assert.equal(fixture.events[0].args[4], 'INVALID_OPTION')
 })
 
 await runAsyncTest('fluxo principal propaga falha de conteúdo sem registrar sucesso ou estado', async () => {
   const fixture = createMainFlowDependencies({
-    formatLinks: async () => { throw new Error('falha controlada de links') }
+    formatLinks: async () => {
+      throw new Error('falha controlada de links')
+    }
   })
 
   await assert.rejects(
@@ -764,15 +881,22 @@ await runAsyncTest('fluxo de categorias abre DRCA, CAE disponível e CAE vazio',
   ]
 
   for (const scenario of scenarios) {
-    const fixture = createDocumentsFlowDependencies(scenario.emptyCae ? {
-      listDocuments: async () => []
-    } : {})
+    const fixture = createDocumentsFlowDependencies(
+      scenario.emptyCae
+        ? {
+            listDocuments: async () => []
+          }
+        : {}
+    )
     const { sock, messages } = createFakeSocket()
 
     await processDocsCategoryOption(sock, 'user@s.whatsapp.net', 'Aluno', scenario.option, 'docs', fixture.dependencies)
 
     assert.match(messages[0].content.text, scenario.expectedText)
-    assert.deepEqual(fixture.events.map(event => event.type), ['set-state', 'user-log'])
+    assert.deepEqual(
+      fixture.events.map((event) => event.type),
+      ['set-state', 'user-log']
+    )
     assert.equal(fixture.events[0].state, scenario.expectedState)
   }
 })
@@ -784,7 +908,10 @@ await runAsyncTest('fluxo de categorias rejeita opção inválida com menu real'
   await processDocsCategoryOption(sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs', fixture.dependencies)
 
   assert.match(messages[0].content.text, /1 - Documentos DRCA/)
-  assert.deepEqual(fixture.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['user-log']
+  )
   assert.equal(fixture.events[0].args[4], 'INVALID_OPTION')
 })
 
@@ -795,20 +922,21 @@ await runAsyncTest('fluxos DRCA e CAE encaminham documento válido com opções 
   ]) {
     const fixture = createDocumentsFlowDependencies()
 
-    rememberDocumentMenu('user@s.whatsapp.net', route.state, [route.documentType === 'cae' ? fixture.caeDocument : fixture.drcaDocument])
-    await route.process(
-      createFakeSocket().sock,
-      'user@s.whatsapp.net',
-      'Aluno',
-      '1',
-      route.state,
-      fixture.dependencies
-    )
+    rememberDocumentMenu('user@s.whatsapp.net', route.state, [
+      route.documentType === 'cae' ? fixture.caeDocument : fixture.drcaDocument
+    ])
+    await route.process(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '1', route.state, fixture.dependencies)
 
-    assert.deepEqual(fixture.events.map(event => event.type), ['send-tracked'])
+    assert.deepEqual(
+      fixture.events.map((event) => event.type),
+      ['send-tracked']
+    )
     const args = fixture.events[0].args
     assert.equal(args[6], route.menu)
-    assert.equal(args[9][0].label, route.documentType === 'cae' ? fixture.caeDocument.label : fixture.drcaDocument.label)
+    assert.equal(
+      args[9][0].label,
+      route.documentType === 'cae' ? fixture.caeDocument.label : fixture.drcaDocument.label
+    )
   }
 })
 
@@ -817,57 +945,96 @@ await runAsyncTest('fluxos DRCA e CAE orientam opção ausente com lista ou fall
   const drcaSocket = createFakeSocket()
   await processDrcaDocsOption(drcaSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_drca', drca.dependencies)
   assert.match(drcaSocket.messages[0].content.text, /Documento DRCA de teste/)
-  assert.deepEqual(drca.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    drca.events.map((event) => event.type),
+    ['user-log']
+  )
 
   const cae = createDocumentsFlowDependencies()
   const caeSocket = createFakeSocket()
   await processCaeDocsOption(caeSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_cae', cae.dependencies)
   assert.match(caeSocket.messages[0].content.text, /Documento CAE de teste/)
-  assert.deepEqual(cae.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    cae.events.map((event) => event.type),
+    ['user-log']
+  )
 
   const emptyCae = createDocumentsFlowDependencies({ listDocuments: async () => [] })
   const emptyCaeSocket = createFakeSocket()
-  await processCaeDocsOption(emptyCaeSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'docs_cae', emptyCae.dependencies)
+  await processCaeDocsOption(
+    emptyCaeSocket.sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '9',
+    'docs_cae',
+    emptyCae.dependencies
+  )
   assert.match(emptyCaeSocket.messages[0].content.text, /Ainda não há documentos da CAE/)
-  assert.deepEqual(emptyCae.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    emptyCae.events.map((event) => event.type),
+    ['user-log']
+  )
 })
 
 await runAsyncTest('fluxo documental propaga falha de consulta sem registrar sucesso', async () => {
   const fixture = createDocumentsFlowDependencies({
-    listDocuments: async () => { throw new Error('falha controlada de documentos') }
+    listDocuments: async () => {
+      throw new Error('falha controlada de documentos')
+    }
   })
 
   await assert.rejects(
-    processDrcaDocsOption(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '1', 'docs_drca', fixture.dependencies),
+    processDrcaDocsOption(
+      createFakeSocket().sock,
+      'user@s.whatsapp.net',
+      'Aluno',
+      '1',
+      'docs_drca',
+      fixture.dependencies
+    ),
     /falha controlada de documentos/
   )
   assert.deepEqual(fixture.events, [])
 })
 
 await runAsyncTest('seleção de curso cobre os cinco cursos e opção inválida', async () => {
-  const expectedStates = [
-    'curso_eng_comp',
-    'curso_bach_adm',
-    'curso_lic_fis',
-    'curso_grad_tce',
-    'curso_eng_civil'
-  ]
+  const expectedStates = ['curso_eng_comp', 'curso_bach_adm', 'curso_lic_fis', 'curso_grad_tce', 'curso_eng_civil']
 
   for (const [index, expectedState] of expectedStates.entries()) {
     const fixture = createCourseFlowDependencies()
     const { sock, messages } = createFakeSocket()
-    await processCourseSelectionOption(sock, 'user@s.whatsapp.net', 'Aluno', String(index + 1), 'curso', fixture.dependencies)
+    await processCourseSelectionOption(
+      sock,
+      'user@s.whatsapp.net',
+      'Aluno',
+      String(index + 1),
+      'curso',
+      fixture.dependencies
+    )
 
     assert.match(messages[0].content.text, /PPC/)
-    assert.deepEqual(fixture.events.map(event => event.type), ['set-state', 'user-log'])
+    assert.deepEqual(
+      fixture.events.map((event) => event.type),
+      ['set-state', 'user-log']
+    )
     assert.equal(fixture.events[0].state, expectedState)
   }
 
   const invalid = createCourseFlowDependencies()
   const invalidSocket = createFakeSocket()
-  await processCourseSelectionOption(invalidSocket.sock, 'user@s.whatsapp.net', 'Aluno', '9', 'curso', invalid.dependencies)
+  await processCourseSelectionOption(
+    invalidSocket.sock,
+    'user@s.whatsapp.net',
+    'Aluno',
+    '9',
+    'curso',
+    invalid.dependencies
+  )
   assert.match(invalidSocket.messages[0].content.text, /1 - Engenharia de Computação/)
-  assert.deepEqual(invalid.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    invalid.events.map((event) => event.type),
+    ['user-log']
+  )
 })
 
 await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ausente', async () => {
@@ -881,7 +1048,10 @@ await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ause
     'curso_eng_comp',
     valid.dependencies
   )
-  assert.deepEqual(valid.events.map(event => event.type), ['send-tracked'])
+  assert.deepEqual(
+    valid.events.map((event) => event.type),
+    ['send-tracked']
+  )
   assert.equal(valid.events[0].args[6], 'curso')
   assert.deepEqual(valid.events[0].args[9], [valid.ppcDocument])
 
@@ -896,16 +1066,28 @@ await runAsyncTest('fluxo PPC encaminha documento válido e rejeita opção ause
     invalid.dependencies
   )
   assert.match(invalidSocket.messages[0].content.text, /PPC de Engenharia Civil/)
-  assert.deepEqual(invalid.events.map(event => event.type), ['user-log'])
+  assert.deepEqual(
+    invalid.events.map((event) => event.type),
+    ['user-log']
+  )
 })
 
 await runAsyncTest('fluxo PPC propaga falha de busca sem envio ou log falso', async () => {
   const fixture = createCourseFlowDependencies({
-    listPpcs: async () => { throw new Error('falha controlada de PPC') }
+    listPpcs: async () => {
+      throw new Error('falha controlada de PPC')
+    }
   })
 
   await assert.rejects(
-    processPpcDocumentOption(createFakeSocket().sock, 'user@s.whatsapp.net', 'Aluno', '1', 'curso_eng_comp', fixture.dependencies),
+    processPpcDocumentOption(
+      createFakeSocket().sock,
+      'user@s.whatsapp.net',
+      'Aluno',
+      '1',
+      'curso_eng_comp',
+      fixture.dependencies
+    ),
     /falha controlada de PPC/
   )
   assert.deepEqual(fixture.events, [])
@@ -943,16 +1125,13 @@ await runAsyncTest('envio rastreado registra sucesso uma vez e mantém continuid
     fixture.dependencies
   )
 
-  assert.deepEqual(fixture.events.map(event => event.type), [
-    'user-log',
-    'send-file',
-    'follow-up',
-    'bot-log',
-    'user-log'
-  ])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['user-log', 'send-file', 'follow-up', 'bot-log', 'user-log']
+  )
   assert.equal(fixture.events[0].args[4], 'DOCUMENT_REQUESTED')
   assert.equal(fixture.events.at(-1).args[4], 'DOCUMENT_SENT')
-  assert.equal(fixture.events.filter(event => event.type === 'send-file').length, 1)
+  assert.equal(fixture.events.filter((event) => event.type === 'send-file').length, 1)
   assert.deepEqual(fixture.events[2].args[2], siblingOptions)
   assert.equal(fixture.events[2].args[3], '1')
   assert.equal(messages.length, 2)
@@ -989,13 +1168,19 @@ await runAsyncTest('envio rastreado registra falha canônica sem sucesso falso o
   )
 
   assert.deepEqual(
-    fixture.events.map(event => event.type),
+    fixture.events.map((event) => event.type),
     ['user-log', 'send-file', 'user-log', 'follow-up']
   )
   assert.equal(fixture.events[0].args[4], 'DOCUMENT_REQUESTED')
   assert.equal(fixture.events[2].args[4], 'DOCUMENT_ERROR')
-  assert.equal(fixture.events.some(event => event.type === 'bot-log'), false)
-  assert.equal(fixture.events.some(event => event.args?.[4] === 'DOCUMENT_SENT'), false)
+  assert.equal(
+    fixture.events.some((event) => event.type === 'bot-log'),
+    false
+  )
+  assert.equal(
+    fixture.events.some((event) => event.args?.[4] === 'DOCUMENT_SENT'),
+    false
+  )
   assert.deepEqual(fixture.events[3].args[2], [])
   assert.equal(fixture.events[3].args[3], '9')
   assert.equal(messages.length, 1)
@@ -1030,14 +1215,17 @@ await runAsyncTest('envio rastreado propaga exceção não normalizada sem follo
     /falha controlada do provider/
   )
 
-  assert.deepEqual(fixture.events.map(event => event.type), ['user-log', 'send-file'])
+  assert.deepEqual(
+    fixture.events.map((event) => event.type),
+    ['user-log', 'send-file']
+  )
 })
 
 await runAsyncTest('processa todas as mensagens de um upsert na ordem recebida', async () => {
   const processed = []
   const messages = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
 
-  await processMessageBatch(messages, async message => {
+  await processMessageBatch(messages, async (message) => {
     processed.push(message.id)
   })
 
@@ -1050,7 +1238,7 @@ await runAsyncTest('isola erro de uma mensagem sem perder o restante do lote', a
 
   await processMessageBatch(
     [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
-    async message => {
+    async (message) => {
       if (message.id === 'b') throw new Error('falha controlada')
       processed.push(message.id)
     },
@@ -1227,14 +1415,17 @@ runTest('normaliza e autoriza números administrativos', () => {
 })
 
 runTest('descarta ADMIN_NUMBERS fora do formato E.164 plausível', () => {
-  assert.deepEqual(getValidAdminNumbers([
-    '123',
-    '5598999999999',
-    '+55 (98) 99999-9999',
-    'abc5598999999999xyz',
-    '5598999999999@g.us',
-    '0000000000'
-  ]), ['5598999999999'])
+  assert.deepEqual(
+    getValidAdminNumbers([
+      '123',
+      '5598999999999',
+      '+55 (98) 99999-9999',
+      'abc5598999999999xyz',
+      '5598999999999@g.us',
+      '0000000000'
+    ]),
+    ['5598999999999']
+  )
   assert.deepEqual(getValidAdminNumbers(['abc5598999999999xyz']), [])
   assert.deepEqual(getValidAdminNumbers(['5598999999999@g.us']), [])
   assert.deepEqual(getValidAdminNumbers(['0000000000']), [])
@@ -1279,11 +1470,7 @@ await runAsyncTest('resolve administrador por mapeamento LID do socket', async (
       }
     }
   }
-  const result = await resolveAdminAuthorization(
-    sock,
-    { key: { remoteJid: '123456789012345@lid' } },
-    ['5598999999999']
-  )
+  const result = await resolveAdminAuthorization(sock, { key: { remoteJid: '123456789012345@lid' } }, ['5598999999999'])
   assert.deepEqual(result, {
     authorized: true,
     source: 'lid_mapping',
@@ -1324,11 +1511,19 @@ runTest('autoriza administrador por PN alternativo quando a conversa usa LID', (
     }
   }
 
-  assert.deepEqual(getMessageJidCandidates(message), [
-    '123456789012345@lid',
-    '5598999999999@s.whatsapp.net'
-  ])
+  assert.deepEqual(getMessageJidCandidates(message), ['123456789012345@lid', '5598999999999@s.whatsapp.net'])
   assert.equal(getPhoneE164FromJids(getMessageJidCandidates(message)), '5598999999999')
+  assert.equal(getConversationQueueKey(message), '5598999999999@s.whatsapp.net')
+  assert.equal(
+    getConversationQueueKey({ key: { remoteJid: '5598999999999@s.whatsapp.net' } }),
+    '5598999999999@s.whatsapp.net'
+  )
+  assert.equal(
+    getConversationQueueKey({
+      key: { remoteJid: '120363000000000000@g.us', participant: '5598999999999@s.whatsapp.net' }
+    }),
+    '120363000000000000@g.us'
+  )
   assert.equal(isAdminMessageAuthorized(message, ['5598999999999']), true)
 })
 
@@ -1358,7 +1553,7 @@ runTest('mapeia eventos para códigos operacionais consistentes', () => {
 runTest('log técnico inclui código e correlação no envelope', () => {
   const originalLog = console.log
   const outputs = []
-  console.log = value => outputs.push(String(value))
+  console.log = (value) => outputs.push(String(value))
 
   try {
     botLog('MESSAGE_RECEIVED', 'Teste de envelope', { correlationId: 'message-123' })
@@ -1375,7 +1570,7 @@ runTest('log técnico inclui código e correlação no envelope', () => {
 runTest('sanitiza conteúdo sensível em logs técnicos', () => {
   const originalLog = console.log
   const outputs = []
-  console.log = value => outputs.push(String(value))
+  console.log = (value) => outputs.push(String(value))
 
   try {
     botLog('MESSAGE_RECEIVED', 'Teste de sanitização', {
@@ -1399,7 +1594,7 @@ runTest('sanitiza conteúdo sensível em logs técnicos', () => {
 runTest('sanitiza dados sensíveis dentro de objetos aninhados', () => {
   const originalLog = console.log
   const outputs = []
-  console.log = value => outputs.push(String(value))
+  console.log = (value) => outputs.push(String(value))
 
   try {
     botLog('MESSAGE_RECEIVED', 'Teste aninhado', {
@@ -1445,11 +1640,16 @@ await runAsyncTest('envia PDF da base permitida com payload e metadados corretos
     await writeFile(filePath, fileContent)
     const { sock, messages } = createFakeSocket()
 
-    const result = await sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-ok',
-      label: 'Documento Seguro',
-      path: './documentos/documento.pdf'
-    }, { documentsBasePath: documentsDir })
+    const result = await sendDocument(
+      sock,
+      'user@s.whatsapp.net',
+      {
+        key: 'doc-ok',
+        label: 'Documento Seguro',
+        path: './documentos/documento.pdf'
+      },
+      { documentsBasePath: documentsDir }
+    )
 
     assert.equal(result.success, true)
     assert.equal(result.code, BotResultCode.OK)
@@ -1464,11 +1664,18 @@ await runAsyncTest('envia PDF da base permitida com payload e metadados corretos
 await runAsyncTest('retorna 404 para arquivo ausente dentro da base permitida', async () => {
   await withTemporaryDocumentSandbox(async ({ documentsDir }) => {
     const { sock, messages } = createFakeSocket()
-    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-missing',
-      label: 'Documento ausente',
-      path: path.join(documentsDir, 'ausente.pdf')
-    }, { documentsBasePath: documentsDir }))
+    const result = await withMutedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-missing',
+          label: 'Documento ausente',
+          path: path.join(documentsDir, 'ausente.pdf')
+        },
+        { documentsBasePath: documentsDir }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.NOT_FOUND)
@@ -1483,11 +1690,18 @@ await runAsyncTest('retorna 413 sem enviar binário acima do limite configurado'
     const filePath = path.join(documentsDir, 'grande.pdf')
     await writeFile(filePath, Buffer.alloc(16, 1))
     const { sock, messages } = createFakeSocket()
-    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-large',
-      label: 'Documento grande',
-      path: filePath
-    }, { documentsBasePath: documentsDir, maxSizeBytes: 8 }))
+    const result = await withMutedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-large',
+          label: 'Documento grande',
+          path: filePath
+        },
+        { documentsBasePath: documentsDir, maxSizeBytes: 8 }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.PAYLOAD_TOO_LARGE)
@@ -1509,17 +1723,24 @@ await runAsyncTest('normaliza falha do provider como 500 e orienta o usuário', 
       }
     }
 
-    const { result, output } = await withCapturedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-provider',
-      label: 'Documento provider',
-      path: filePath
-    }, { documentsBasePath: documentsDir }))
+    const { result, output } = await withCapturedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-provider',
+          label: 'Documento provider',
+          path: filePath
+        },
+        { documentsBasePath: documentsDir }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
     assert.equal(result.errorMessage, 'Erro ao enviar documento')
-    assert.equal(messages.filter(message => message.content.document).length, 1)
-    assert.equal(messages.filter(message => message.content.text).length, 1)
+    assert.equal(messages.filter((message) => message.content.document).length, 1)
+    assert.equal(messages.filter((message) => message.content.text).length, 1)
     assert.match(messages.at(-1).content.text, /Código de referência: 500/)
     assert.equal(output.includes(filePath), false)
     assert.doesNotMatch(output, /detalhe interno do provider/)
@@ -1531,11 +1752,18 @@ await runAsyncTest('rejeita limite de tamanho inválido sem enviar binário', as
     const filePath = path.join(documentsDir, 'limite-invalido.pdf')
     await writeFile(filePath, Buffer.from('%PDF-1.4\nlimite inválido'))
     const { sock, messages } = createFakeSocket()
-    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-invalid-limit',
-      label: 'Documento com limite inválido',
-      path: filePath
-    }, { documentsBasePath: documentsDir, maxSizeBytes: Number.NaN }))
+    const result = await withMutedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-invalid-limit',
+          label: 'Documento com limite inválido',
+          path: filePath
+        },
+        { documentsBasePath: documentsDir, maxSizeBytes: Number.NaN }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
@@ -1556,11 +1784,18 @@ await runAsyncTest('mantém retorno 500 quando o provider também rejeita a orie
       }
     }
 
-    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-provider-double',
-      label: 'Documento provider duplo',
-      path: filePath
-    }, { documentsBasePath: documentsDir }))
+    const result = await withMutedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-provider-double',
+          label: 'Documento provider duplo',
+          path: filePath
+        },
+        { documentsBasePath: documentsDir }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.INTERNAL_ERROR)
@@ -1573,11 +1808,18 @@ await runAsyncTest('bloqueia arquivo real fora da base temporária', async () =>
     const outsidePath = path.join(outsideDir, 'fora.pdf')
     await writeFile(outsidePath, Buffer.from('%PDF-1.4\nfora'))
     const { sock, messages } = createFakeSocket()
-    const { result, output } = await withCapturedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-outside',
-      label: 'Documento externo',
-      path: outsidePath
-    }, { documentsBasePath: documentsDir }))
+    const { result, output } = await withCapturedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-outside',
+          label: 'Documento externo',
+          path: outsidePath
+        },
+        { documentsBasePath: documentsDir }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.FORBIDDEN)
@@ -1601,11 +1843,18 @@ await runOptionalAsyncTest('bloqueia link interno que aponta para fora da base',
     }
 
     const { sock, messages } = createFakeSocket()
-    const result = await withMutedConsole(() => sendDocument(sock, 'user@s.whatsapp.net', {
-      key: 'doc-link',
-      label: 'Documento por link',
-      path: path.join(linkedDir, path.basename(outsidePath))
-    }, { documentsBasePath: documentsDir }))
+    const result = await withMutedConsole(() =>
+      sendDocument(
+        sock,
+        'user@s.whatsapp.net',
+        {
+          key: 'doc-link',
+          label: 'Documento por link',
+          path: path.join(linkedDir, path.basename(outsidePath))
+        },
+        { documentsBasePath: documentsDir }
+      )
+    )
 
     assert.equal(result.success, false)
     assert.equal(result.code, BotResultCode.FORBIDDEN)
@@ -1651,7 +1900,10 @@ runTest('follow-up contextual mostra opções restantes do mesmo menu', () => {
   const remainingOptions = getRemainingMenuOptions(options, '1')
   const message = formatContextualFollowUpMessage(options, '1')
 
-  assert.deepEqual(remainingOptions.map(option => option.key), ['2', '3', '4'])
+  assert.deepEqual(
+    remainingOptions.map((option) => option.key),
+    ['2', '3', '4']
+  )
   assert.doesNotMatch(message, /1 - Requerimento Acadêmico/)
   assert.match(message, /2 - Requerimento Diploma Técnico/)
   assert.match(message, /3 - Requerimento Superior/)
@@ -1679,7 +1931,7 @@ await runAsyncTest('cancela follow-up pendente quando chega nova interação', a
   const { sock, messages } = createFakeSocket()
   void sendFollowUp(sock, 'cancelamento@s.whatsapp.net', 20)
   cancelPendingFollowUp('cancelamento@s.whatsapp.net')
-  await new Promise(resolve => setTimeout(resolve, 40))
+  await new Promise((resolve) => setTimeout(resolve, 40))
   assert.equal(messages.length, 0)
 })
 

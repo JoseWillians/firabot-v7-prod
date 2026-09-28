@@ -4,21 +4,37 @@ services:
     container_name: firabot-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD no .env}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-firabot}
-      MYSQL_USER: ${MYSQL_USER:-firabot}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-firabot123}
+      MYSQL_USER: firabot_migrator
+      MYSQL_PASSWORD: ${FIRABOT_MIGRATION_DB_PASSWORD:?Defina FIRABOT_MIGRATION_DB_PASSWORD no .env}
     ports:
-      - "127.0.0.1:3306:3306"
+      - '127.0.0.1:3306:3306'
     volumes:
       - firabot_mysql_data:/var/lib/mysql
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent"]
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -u"$${MYSQL_USER}" -p"$${MYSQL_PASSWORD}" --silent']
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  db-provision:
+    image: mysql:8.0
+    entrypoint: ['sh', '/usr/local/bin/provision-runtime-user.sh']
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD no .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-firabot}
+      FIRABOT_MIGRATION_DB_PASSWORD: ${FIRABOT_MIGRATION_DB_PASSWORD:?Defina FIRABOT_MIGRATION_DB_PASSWORD no .env}
+      FIRABOT_APP_DB_PASSWORD: ${FIRABOT_APP_DB_PASSWORD:?Defina FIRABOT_APP_DB_PASSWORD no .env}
+    volumes:
+      - ./scripts/db-provision-runtime-user.sh:/usr/local/bin/provision-runtime-user.sh:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: 'no'
 
 volumes:
   firabot_mysql_data:

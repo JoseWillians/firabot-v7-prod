@@ -89,37 +89,40 @@ Variáveis principais:
 - `DOCUMENT_MAX_SIZE_MB`: tamanho máximo de PDF para envio automático.
 - `ADMIN_NUMBERS`: números autorizados para comandos administrativos, separados por vírgula, somente com DDI/DDD e 10 a 15 dígitos. Entradas inválidas são ignoradas de forma segura.
 - `SUPPORT_TICKET_RETENTION_DAYS`: retenção opt-in das solicitações de suporte; `0` mantém a limpeza automática desativada até aprovação institucional.
-- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`: conexão MySQL.
-- `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: opcionais para sobrescrever o MySQL local do `docker-compose.yml`.
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `FIRABOT_APP_DB_PASSWORD`, `DB_NAME`: conexão MySQL do bot. `DB_NAME` deve coincidir com `MYSQL_DATABASE` quando ambos forem definidos.
+- `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `FIRABOT_MIGRATION_DB_PASSWORD`: credenciais administrativas/migradoras do MySQL Compose; não use essas credenciais no bot.
 
 ## Banco de Dados
 
 Para desenvolvimento no notebook, use o MySQL local via Docker. O banco remoto do IFMA existe, mas não deve ser usado nos testes locais.
 
+Antes, configure `FIRABOT_APP_DB_PASSWORD`, `FIRABOT_MIGRATION_DB_PASSWORD` e `MYSQL_ROOT_PASSWORD` no `.env` com senhas hexadecimais aleatórias e distintas, de pelo menos 32 caracteres. Isso evita credenciais previsíveis e problemas de escaping no inicializador oficial da imagem MySQL.
+
 ```bash
 docker compose up -d mysql
+docker compose run --rm db-provision
 ```
 
 O `docker-compose.yml` sobe:
 
 - container: `firabot-mysql`
 - banco: `firabot`
-- usuário: `firabot`
-- senha local: `firabot123`
+- usuário do bot: `firabot_app` (somente SELECT/INSERT/UPDATE/DELETE)
+- usuário de manutenção: `firabot_migrator` (credencial usada pelos scripts de migration/backup)
 - porta local: `127.0.0.1:3306`
-- schema inicial: `./database/schema.sql`
+- schema inicial: `./database/schema.sql`, aplicado dentro do banco definido por `MYSQL_DATABASE`
 
 Acesse o MySQL local com:
 
 ```bash
-docker exec -it firabot-mysql mysql -u firabot -p firabot
+docker exec -it firabot-mysql mysql -u firabot_migrator -p firabot
 ```
 
-Senha:
+Não reutilize as senhas de manutenção ou root.
 
-```text
-firabot123
-```
+O `MYSQL_DATABASE` do Compose é a fonte do nome do banco. Para executar o bot fora do Docker, deixe `DB_NAME` vazio para ele herdar `MYSQL_DATABASE`, ou informe exatamente o mesmo valor. O schema não cria nem seleciona um nome fixo.
+
+O serviço `db-provision` pode ser executado novamente para atualizar credenciais em volumes existentes. Ele cria/atualiza o usuário migrador, revoga grants amplos antigos de `firabot_app`, limita o bot a SELECT/INSERT/UPDATE/DELETE e remove a conta legada `firabot` do Compose antigo. Migrations e backups usam o usuário migrador; a aplicação não recebe suas credenciais. Em volumes já inicializados, mantenha o mesmo `MYSQL_DATABASE` e configure `MYSQL_ROOT_PASSWORD` com a senha root gravada no volume. O provisionador não cria nem move bancos existentes; alterar o nome exige planejar e validar uma migração de dados separada antes de mudar o Compose.
 
 Comandos úteis dentro do MySQL:
 
@@ -154,8 +157,8 @@ npm run db:restore:test
 
 As migrations numeradas ficam em `database/migrations/` e são registradas em
 `schema_migrations`, com checksum para detectar alteração indevida em um arquivo
-já aplicado. Os scripts operam, por padrão, somente no container local
-`firabot-mysql`. O restore sempre cria e remove um banco temporário isolado.
+já aplicado. Os scripts operam, por padrão, no container `firabot-mysql` e usam
+o banco de `MYSQL_DATABASE`. O restore sempre cria e remove um banco temporário isolado.
 Backups ficam em `database/backups/`, que não é versionado.
 
 As migrations `003` a `005` separam JID/telefone, tornam o suporte compatível
@@ -331,7 +334,7 @@ Menu principal atual:
 
 O menu principal não exibe `0 - Voltar`. A opção `0` vale apenas dentro de submenus ou telas de continuidade.
 
-Links importantes e editais são carregados preferencialmente das tabelas `important_links` e `notices`. As listas locais continuam como fallback quando o banco está vazio ou indisponível.
+Links importantes e editais são carregados das tabelas `important_links` e `notices`, usando apenas registros ativos. Se não houver registros, o bot informa que a lista está vazia; se o banco estiver indisponível, orienta temporariamente o usuário com referência `503`. Listas locais antigas não são reativadas como fallback de produção.
 
 ## Testes e Qualidade
 
@@ -387,7 +390,7 @@ Depois de enviar um documento, o bot mostra uma continuação contextual com as 
 
 No fluxo `7 - Suporte`, enquanto o painel administrativo e os responsáveis setoriais ainda não existem, o bot pede que o usuário envie sua dúvida em uma mensagem. Após registrar a mensagem, ele pergunta se o usuário deseja voltar ao menu principal ou encerrar.
 
-No fluxo `5 - Editais Abertos`, o bot lista até 10 editais em andamento da página oficial de processos seletivos do IFMA e, na sequência, mostra as opções para voltar ao menu principal ou encerrar.
+No fluxo `5 - Editais Abertos`, o bot lista até 10 editais ativos cadastrados a partir de fontes institucionais e, na sequência, mostra as opções para voltar ao menu principal ou encerrar. A atualização e revisão desses registros dependem dos responsáveis institucionais.
 
 ## Solução de Problemas
 

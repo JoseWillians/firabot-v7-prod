@@ -14,14 +14,16 @@ const migrations = (await readdir(migrationsDir))
   .filter((name) => /^\d{3}_[a-z0-9_-]+\.sql$/i.test(name))
   .sort((left, right) => left.localeCompare(right))
 
-const mysqlCommand = '-u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'
+const mysqlCommand = 'export MYSQL_PWD="$MYSQL_PASSWORD"; exec mysql --user="$MYSQL_USER" "$MYSQL_DATABASE"'
 
 function runDocker(args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('docker', args, options)
     let stdout = ''
 
-    child.stdout?.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
     child.once('error', reject)
     child.once('close', (code) => {
       if (code === 0) resolvePromise(stdout.trim())
@@ -31,10 +33,9 @@ function runDocker(args, options = {}) {
 }
 
 async function query(sql) {
-  return runDocker(
-    ['exec', container, 'sh', '-c', `exec mysql ${mysqlCommand} -N -e "$1"`, 'firabot-migrate', sql],
-    { stdio: ['ignore', 'pipe', 'inherit'] }
-  )
+  return runDocker(['exec', container, 'sh', '-c', `${mysqlCommand} -N -e "$1"`, 'firabot-migrate', sql], {
+    stdio: ['ignore', 'pipe', 'inherit']
+  })
 }
 
 await query(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -48,24 +49,24 @@ for (const migrationName of migrations) {
   const version = basename(migrationName, '.sql')
   const sql = await readFile(migrationPath)
   const checksum = createHash('sha256').update(sql).digest('hex')
-  const existingChecksum = await query(
-    `SELECT checksum FROM schema_migrations WHERE version = '${version}' LIMIT 1`
-  )
+  const existingChecksum = await query(`SELECT checksum FROM schema_migrations WHERE version = '${version}' LIMIT 1`)
 
   if (existingChecksum) {
     if (existingChecksum !== checksum) {
-      console.error(JSON.stringify({
-        service: 'firabot-maintenance',
-        eventType: 'DATABASE_MIGRATION_CONFLICT',
-        code: 409,
-        migration: migrationName
-      }))
+      console.error(
+        JSON.stringify({
+          service: 'firabot-maintenance',
+          eventType: 'DATABASE_MIGRATION_CONFLICT',
+          code: 409,
+          migration: migrationName
+        })
+      )
       process.exit(1)
     }
     continue
   }
 
-  const child = spawn('docker', ['exec', '-i', container, 'sh', '-c', `exec mysql ${mysqlCommand}`], {
+  const child = spawn('docker', ['exec', '-i', container, 'sh', '-c', mysqlCommand], {
     stdio: ['pipe', 'inherit', 'inherit']
   })
   const migrationInput = pipeline(createReadStream(migrationPath), child.stdin)
@@ -73,20 +74,22 @@ for (const migrationName of migrations) {
   await migrationInput
   if (exitCode !== 0) throw new Error(`Migration ${migrationName} terminou com código ${exitCode}.`)
 
-  await query(
-    `INSERT INTO schema_migrations (version, checksum) VALUES ('${version}', '${checksum}')`
+  await query(`INSERT INTO schema_migrations (version, checksum) VALUES ('${version}', '${checksum}')`)
+  console.log(
+    JSON.stringify({
+      service: 'firabot-maintenance',
+      eventType: 'DATABASE_MIGRATION_APPLIED',
+      code: 200,
+      migration: migrationName
+    })
   )
-  console.log(JSON.stringify({
-    service: 'firabot-maintenance',
-    eventType: 'DATABASE_MIGRATION_APPLIED',
-    code: 200,
-    migration: migrationName
-  }))
 }
 
-console.log(JSON.stringify({
-  service: 'firabot-maintenance',
-  eventType: 'DATABASE_MIGRATIONS_CURRENT',
-  code: 200,
-  total: migrations.length
-}))
+console.log(
+  JSON.stringify({
+    service: 'firabot-maintenance',
+    eventType: 'DATABASE_MIGRATIONS_CURRENT',
+    code: 200,
+    total: migrations.length
+  })
+)
