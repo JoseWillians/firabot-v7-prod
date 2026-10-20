@@ -89,6 +89,7 @@ Variáveis principais:
 - `DOCUMENT_MAX_SIZE_MB`: tamanho máximo de PDF para envio automático.
 - `ADMIN_NUMBERS`: números autorizados para comandos administrativos, separados por vírgula, somente com DDI/DDD e 10 a 15 dígitos. Entradas inválidas são ignoradas de forma segura.
 - `SUPPORT_TICKET_RETENTION_DAYS`: retenção opt-in das solicitações de suporte; `0` mantém a limpeza automática desativada até aprovação institucional.
+- `NOTICES_SYNC_INTERVAL_MINUTES`: intervalo em minutos para sincronizar automaticamente os 10 últimos editais atualizados de Santa Inês no portal do IFMA (`360` por padrão, equivalente a 6 horas; `0` desativa o agendador periódico).
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `FIRABOT_APP_DB_PASSWORD`, `DB_NAME`: conexão MySQL do bot. `DB_NAME` deve coincidir com `MYSQL_DATABASE` quando ambos forem definidos.
 - `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `FIRABOT_MIGRATION_DB_PASSWORD`: credenciais administrativas/migradoras do MySQL Compose; não use essas credenciais no bot.
 
@@ -122,6 +123,8 @@ Não reutilize as senhas de manutenção ou root.
 
 O `MYSQL_DATABASE` do Compose é a fonte do nome do banco. Para executar o bot fora do Docker, deixe `DB_NAME` vazio para ele herdar `MYSQL_DATABASE`, ou informe exatamente o mesmo valor. O schema não cria nem seleciona um nome fixo.
 
+O projeto padroniza texto em UTF-8: arquivos devem ser salvos em UTF-8 sem BOM; o MySQL Compose, o banco e as tabelas usam `utf8mb4` com `utf8mb4_unicode_ci`; e a conexão da aplicação negocia `utf8mb4`. A migration `006_utf8mb4_database_defaults.sql` define o padrão do banco para novas tabelas e rotinas, sem reescrever dados ou converter tabelas existentes. Dados antigos gravados com acentuação corrompida precisam de diagnóstico e reparo separado após backup.
+
 O serviço `db-provision` pode ser executado novamente para atualizar credenciais em volumes existentes. Ele cria/atualiza o usuário migrador, revoga grants amplos antigos de `firabot_app`, limita o bot a SELECT/INSERT/UPDATE/DELETE e remove a conta legada `firabot` do Compose antigo. Migrations e backups usam o usuário migrador; a aplicação não recebe suas credenciais. Em volumes já inicializados, mantenha o mesmo `MYSQL_DATABASE` e configure `MYSQL_ROOT_PASSWORD` com a senha root gravada no volume. O provisionador não cria nem move bancos existentes; alterar o nome exige planejar e validar uma migração de dados separada antes de mudar o Compose.
 
 Comandos úteis dentro do MySQL:
@@ -140,7 +143,7 @@ Tabelas usadas:
 - `support_tickets`: solicitações minimizadas de suporte, com validade opcional.
 - `docs`: documentos ativos carregados no menu de documentos.
 - `important_links`: links importantes administráveis pelo painel.
-- `notices`: editais administráveis pelo painel enquanto não houver sincronização automática.
+- `notices`: editais ativos sincronizados automaticamente do portal do IFMA (Campus Santa Inês) a cada 6 horas e administráveis pelo painel.
 - `sectors`, `admin_roles`, `admin_users`, `admin_user_sectors`, `admin_audit_logs`: base inicial para o painel administrativo e RBAC por setor.
 
 Para produção, use outro `.env` apontando para o servidor do IFMA. Não misture credenciais remotas com o `.env` local de desenvolvimento.

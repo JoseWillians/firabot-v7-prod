@@ -29,6 +29,7 @@ const numericEnvironment = [
   ['USER_STATE_TTL_MINUTES', 0, Number.MAX_SAFE_INTEGER],
   ['DOCUMENT_MAX_SIZE_MB', 1, Number.MAX_SAFE_INTEGER],
   ['SUPPORT_TICKET_RETENTION_DAYS', 0, Number.MAX_SAFE_INTEGER],
+  ['NOTICES_SYNC_INTERVAL_MINUTES', 0, 10080],
   ['DB_PORT', 1, 65535]
 ] as const
 
@@ -59,6 +60,7 @@ export const config = {
   userStateTtlMinutes: toInteger(process.env.USER_STATE_TTL_MINUTES, 60),
   documentMaxSizeMb: toInteger(process.env.DOCUMENT_MAX_SIZE_MB, 25, 1),
   supportTicketRetentionDays: toInteger(process.env.SUPPORT_TICKET_RETENTION_DAYS, 0),
+  noticesSyncIntervalMinutes: toInteger(process.env.NOTICES_SYNC_INTERVAL_MINUTES, 360, 0, 10080),
   adminNumbers: toList(process.env.ADMIN_NUMBERS),
   database: {
     host: process.env.DB_HOST,
