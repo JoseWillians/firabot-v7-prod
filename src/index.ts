@@ -5,18 +5,26 @@ import { checkDatabaseConnection, closeDatabasePool } from './functions/database
 import { setDatabaseStatus, setRuntimeStartedAt } from './services/runtimeStatusService.js'
 import { technicalErrorLog } from './services/technicalLogger.js'
 import { stopPendingFollowUps } from './flows/conversationFlow.js'
+import { startNoticesAutoSync, stopNoticesAutoSync } from './services/ifmaNoticesSyncService.js'
 import { createGracefulShutdown } from './services/connectionLifecycleService.js'
 import { BotResultCode } from './types/resultCode.js'
 
 const shutdown = createGracefulShutdown({
   stopBot,
-  stopFollowUps: stopPendingFollowUps,
+  stopFollowUps: async () => {
+    await Promise.allSettled([stopPendingFollowUps(), stopNoticesAutoSync()])
+  },
   closeDatabase: closeDatabasePool,
-  onError: error => {
+  onError: (error) => {
     try {
       errorLog('UNKNOWN_ERROR', 'Falha durante o encerramento gracioso', error)
     } catch (loggingError) {
-      technicalErrorLog('UNKNOWN_ERROR', 'Falha ao registrar erro de encerramento', loggingError, BotResultCode.INTERNAL_ERROR)
+      technicalErrorLog(
+        'UNKNOWN_ERROR',
+        'Falha ao registrar erro de encerramento',
+        loggingError,
+        BotResultCode.INTERNAL_ERROR
+      )
     }
   },
   onTimeout: () => {
@@ -47,6 +55,7 @@ async function bootstrap() {
     errorLog('DATABASE_UNAVAILABLE', databaseStatus.message, new Error(databaseStatus.message))
   }
 
+  void startNoticesAutoSync()
   await startBot()
 }
 
@@ -60,11 +69,16 @@ function handleShutdown(signal: NodeJS.Signals) {
 process.once('SIGINT', () => handleShutdown('SIGINT'))
 process.once('SIGTERM', () => handleShutdown('SIGTERM'))
 
-bootstrap().catch(error => {
+bootstrap().catch((error) => {
   try {
     errorLog('UNKNOWN_ERROR', 'Erro na inicialização', error)
   } catch (loggingError) {
-    technicalErrorLog('UNKNOWN_ERROR', 'Falha ao registrar erro de inicialização', loggingError, BotResultCode.INTERNAL_ERROR)
+    technicalErrorLog(
+      'UNKNOWN_ERROR',
+      'Falha ao registrar erro de inicialização',
+      loggingError,
+      BotResultCode.INTERNAL_ERROR
+    )
   }
   void shutdown().finally(() => {
     process.exitCode = 1
